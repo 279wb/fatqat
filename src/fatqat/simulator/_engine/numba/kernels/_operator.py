@@ -19,7 +19,7 @@ def _apply_dense_columns(
 ) -> None:  # pragma: no cover - compiled by Numba
     """Dense local matrix applied to columns ``[lo, hi)`` of every coset."""
     local_dim = offsets.shape[0]
-    width = hi - lo 
+    width = hi - lo
     counter = np.empty(comp_strides.shape[0], dtype=np.int64)
     base = _spread_base(0, comp_strides, comp_dims, counter)
     for _ in range(num_cosets):

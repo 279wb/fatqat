@@ -21,10 +21,10 @@ from fatqat.simulator._engine.nb import (
     _DENSE,
     _fuse_gate_channels,
     _KERNEL_SPECS,
-    _superop_csr,
     NumbaSVEngine,
 )
 from fatqat.simulator._engine.numba.kernels._apply import _classify_matrix
+from fatqat.simulator._engine.numba.kernels._preparation import _superop_csr
 from fatqat.simulator._engine.numpy.engine import NumpySVEngine
 from fatqat.noise import Depolarizing
 from fatqat.noise.catalog import depolarizing_rule
@@ -301,7 +301,7 @@ def test_plan_chunks_floor_scales_with_thread_count():
     # The parallel floor is per-thread (`_MAX_THREADS * _GRAIN_TO_THREAD`), so a
     # state stays serial just below it and splits across threads at it - the
     # absolute crossover tracks the core count, not a fixed size.
-    from fatqat.simulator._engine.nb import (
+    from fatqat.simulator._engine.numba.kernels._preparation import (
         _GRAIN_TO_THREAD,
         _MAX_THREADS,
         _MIN_SIZE_TO_THREAD,
@@ -318,7 +318,7 @@ def test_coset_chunking_is_bit_identical_across_chunk_counts():
     # The floor only ever changes the chunk COUNT; disjoint cosets make the
     # result independent of it, which is why moving the floor never changes an
     # amplitude. A dense gate applied as one chunk equals it applied as many.
-    from fatqat.simulator._engine.nb import _compute_apply_plan
+    from fatqat.simulator._engine.numba.kernels._preparation import _compute_apply_plan
     from fatqat.simulator._engine.numba.kernels._apply import (
         _apply_resolved_parallel,
         _apply_resolved_serial,
