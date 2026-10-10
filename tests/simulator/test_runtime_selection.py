@@ -172,7 +172,7 @@ def test_numba_kernel_thread_scope_expands_and_restores(fail, monkeypatch):
     expected = 2
     numba.set_num_threads(1)
     before = numba.get_num_threads()
-    original = nb.NumbaSVEngine._run_shot_seed_batch
+    original = nb.NumbaSVEngine._run_shot_batch
 
     def probe(self, *args, **kwargs):
         assert numba.get_num_threads() == expected
@@ -180,7 +180,7 @@ def test_numba_kernel_thread_scope_expands_and_restores(fail, monkeypatch):
             raise RuntimeError("numeric failure")
         return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(nb.NumbaSVEngine, "_run_shot_seed_batch", probe)
+    monkeypatch.setattr(nb.NumbaSVEngine, "_run_shot_batch", probe)
     simulation_config = {
         "seed": 7,
         "shot_parallelism": "serial",

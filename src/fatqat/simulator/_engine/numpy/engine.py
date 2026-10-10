@@ -85,12 +85,12 @@ from ...._backends.steps import (
     PutStep,
     ResolvedStep,
 )
-from ....result import _decode_engine_indices_to_clbit_rows, reduce_to_counts
+from ....result import reduce_to_counts
 from .._execution_policy import (
     _ExecutionPolicy as ExecutionPolicy,
     _materialization_policy,
 )
-from ..base import MatrixEngine, _shot_seed_sequences
+from ..base import MatrixEngine
 from .kernels import (
     _ChannelRouteCache,
     _ResetChannelCache,
@@ -115,84 +115,12 @@ from .kernels import (
 )
 from ..parallel import _run_shots_in_processes
 from ..state import ClassicalState, EvolutionState, QuantumState
-
-ERASURE_DIGIT = 2
-
-
-def _condition_matches(
-    condition: tuple[tuple[int, int], ...] | None, clbits: list[int] | None
-) -> bool:
-    """Return whether a lowered feedforward condition passes."""
-    if not condition:
-        return True
-    assert clbits is not None, "feedforward requires initialized classical digits"
-    return all(clbits[c] == v for c, v in condition)
-
-
-def _map_physical_digit(physical_digit: int, reported_digit_map) -> int:
-    """Map one physical measurement outcome to its reported classical digit."""
-    if reported_digit_map is None:
-        return physical_digit
-    return reported_digit_map[physical_digit]
-
-
-def _report_digit(reported_digit: int, confusion, rng: np.random.Generator) -> int:
-    """Optionally resample one reported digit through readout confusion.
-
-    ``confusion`` is column-stochastic (``C[i, j] = P(report i | mapped j)``)
-    or ``None`` for an error-free readout. Only the reported classical value
-    is affected; the caller's collapsed state keeps the physical outcome.
-    """
-    if confusion is None:
-        return reported_digit
-    return int(rng.choice(confusion.shape[0], p=confusion[:, reported_digit]))
-
-
-def _reporting_by_clbit(
-    plan: list[ResolvedStep],
-) -> dict[int, tuple[tuple[int, ...] | None, np.ndarray | None]]:
-    """Map each clbit to the reporting contract of its last writer.
-
-    Fast-path counts decode only each clbit's final value (later measurement
-    writes replace earlier ones, see ``_decode_engine_indices_to_clbit_rows``),
-    so the
-    physical-to-reported map and its readout confusion must likewise come from
-    the last writer. An earlier map or confusion must not survive an error-free
-    overwrite.
-    """
-    by_clbit: dict[int, tuple[tuple[int, ...] | None, np.ndarray | None]] = {}
-    for step in plan:
-        if isinstance(step, MeasurementStep):
-            confusions = step.confusions or (None,) * len(step.classical_indices)
-            maps = step.reported_digit_maps or (None,) * len(step.classical_indices)
-            for clbit, reported_map, confusion in zip(
-                step.classical_indices, maps, confusions
-            ):
-                by_clbit[clbit] = (reported_map, confusion)
-    return by_clbit
-
-
-def _apply_measurement_reporting(
-    rows: np.ndarray,
-    by_clbit: dict[int, tuple[tuple[int, ...] | None, np.ndarray | None]],
-    rng: np.random.Generator,
-) -> None:
-    """Map physical decoded columns, then apply readout confusion in place."""
-    for clbit, (reported_map, confusion) in by_clbit.items():
-        if reported_map is not None:
-            rows[:, clbit] = np.asarray(reported_map, dtype=int)[rows[:, clbit]]
-        if confusion is None:
-            continue
-        dim = confusion.shape[0]
-        reported_column = rows[:, clbit].copy()
-        for reported_digit in range(dim):
-            mask = reported_column == reported_digit
-            hits = int(mask.sum())
-            if hits:
-                rows[mask, clbit] = rng.choice(
-                    dim, size=hits, p=confusion[:, reported_digit]
-                )
-
+from ..workflows.python import (
+    _run_single_pass,
+    _run_one_shot,
+    _run_per_shot,
+    _run_shot_batch,
+)
 
 # --- shared orchestration ---
 
@@ -205,6 +133,11 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
     ``probabilities``, ``collapse``, ``reset_subsystems`` and their
     capability declarations. The quantum representation names the result field.
     """
+
+    _run_single_pass = _run_single_pass
+    _run_per_shot = _run_per_shot
+    _run_shot_batch = _run_shot_batch
+    _run_one_shot = _run_one_shot
 
     def initialize(
         self,
@@ -402,11 +335,9 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
         plan, measurements = payload[:2]
         with self._execution_scope(policy):
             if policy.execution_path == "per_shot":
-                return self._run_per_shot_local(
-                    plan, context, initial_state=initial_state
-                )
+                return self._run_per_shot(plan, context, initial_state=initial_state)
             assert policy.execution_path == "single_pass"
-            return self._run_fast(
+            return self._run_single_pass(
                 plan,
                 measurements,
                 context.shots,
@@ -414,111 +345,6 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
                 context.request,
                 initial_state,
             )
-
-    def _run_fast(
-        self,
-        plan: Sequence[ResolvedStep],
-        measurements: Sequence[tuple[int, int]],
-        shots: int,
-        rng: np.random.Generator,
-        request: ResultRequest,
-        initial_state: InitialEvolutionState[np.ndarray],
-    ) -> RawResult[np.ndarray]:
-        """Evolve once, optionally sample counts, optionally export the state.
-
-        The ``ResetStep`` and ``ApplyChannelStep`` branches are only reachable
-        under density-matrix semantics, where both are deterministic channels;
-        statevector semantics routes every plan bearing them to the dynamic
-        path.
-        """
-        state_requested = getattr(request, self._state_field)
-        self.initialize(
-            self._dims,
-            self._n_clbits,
-            initial_state=initial_state,
-        )
-        for step in plan:
-            if isinstance(step, ApplyMatrixStep):
-                self.apply(step)
-            elif isinstance(step, ApplyChannelStep):
-                self.apply_channel(step, rng)
-            elif isinstance(step, ResetStep):
-                self.reset_subsystems(step.reset_indices, rng)
-
-        collapsed_index: int | None = None
-        if state_requested and measurements:
-            collapsed_index = self.collapse([q for q, _ in measurements], rng)
-
-        outcome_keys = outcome_counts = state = None
-        if request.counts:
-            if not measurements:
-                indices = np.zeros(shots, dtype=int)
-            elif collapsed_index is not None:
-                indices = np.array([collapsed_index], dtype=int)
-            else:
-                indices = self.sample_indices(shots, rng)
-            rows = _decode_engine_indices_to_clbit_rows(
-                indices, measurements, self._dims, self._n_clbits
-            )
-            if initial_state.classical.clbits is not None:
-                written = {clbit for _subsystem, clbit in measurements}
-                for clbit, digit in enumerate(initial_state.classical.clbits):
-                    if clbit not in written:
-                        rows[:, clbit] = digit
-            _apply_measurement_reporting(rows, _reporting_by_clbit(plan), rng)
-            outcome_keys, outcome_counts = reduce_to_counts(rows)
-        if state_requested:
-            state = self.export_state()
-        return RawResult(
-            outcome_keys=outcome_keys, outcome_counts=outcome_counts, state=state
-        )
-
-    def _run_per_shot_local(
-        self,
-        plan: Sequence[ResolvedStep],
-        context: ExecutionContext,
-        *,
-        initial_state: InitialEvolutionState[np.ndarray],
-    ) -> RawResult[np.ndarray]:
-        """Replay dynamic trajectories locally under an already-resolved policy."""
-        request = context.request
-        state_requested = getattr(request, self._state_field)
-        n_iters = context.shots if request.counts else (1 if state_requested else 0)
-        snapshots = self._run_shot_seed_batch(
-            plan,
-            _shot_seed_sequences(context.seed, n_iters),
-            initial_state,
-        )
-
-        outcome_keys = outcome_counts = state = None
-        if request.counts:
-            rows = np.asarray(snapshots, dtype=int).reshape(
-                (len(snapshots), self._n_clbits)
-            )
-            outcome_keys, outcome_counts = reduce_to_counts(rows)
-        if state_requested:
-            state = self.export_state()
-        return RawResult(
-            outcome_keys=outcome_keys, outcome_counts=outcome_counts, state=state
-        )
-
-    def _run_shot_seed_batch(
-        self,
-        plan: Sequence[ResolvedStep],
-        seed_sequences: Sequence[np.random.SeedSequence],
-        initial_state: InitialEvolutionState[np.ndarray],
-    ) -> list[tuple[int, ...]]:
-        snapshots = []
-        for seed_sequence in seed_sequences:
-            self.initialize(
-                self._dims,
-                self._n_clbits,
-                initial_state=initial_state,
-            )
-            snapshots.append(
-                self._run_one_shot(plan, np.random.default_rng(seed_sequence))
-            )
-        return snapshots
 
     def execute_shot_batch(
         self,
@@ -535,88 +361,11 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
         self.configure_system(context.system_dims, context.n_clbits)
         plan = payload[0]
         with self._execution_scope(policy):
-            return self._run_shot_seed_batch(
+            return self._run_shot_batch(
                 plan,
                 seed_batch,
                 initial_state,
             )
-
-    def _run_one_shot(
-        self,
-        plan: Sequence[ResolvedStep],
-        rng: np.random.Generator,
-    ) -> tuple[int, ...]:
-        """Run one dynamic-path shot and return its final clbit snapshot.
-
-        Shared by the serial path and `parallel.py`'s worker batches; it touches
-        the state only through the interface methods (reset consumes rng only
-        under statevector semantics).
-
-        Classical storage was initialized with the quantum state. Allocate
-        report digits only when a measurement or condition needs them.
-        """
-        assert self._evolution_state is not None
-        classical = self._evolution_state.classical
-        clbits = classical.clbits
-        occupied = classical.occupied
-        for step in plan:
-            if clbits is None and (
-                isinstance(step, MeasurementStep) or step.condition is not None
-            ):
-                clbits = [0] * self._n_clbits
-                classical.clbits = clbits
-            if isinstance(step, ApplyMatrixStep) and (
-                occupied is None or all(t in occupied for t in step.target_indices)
-            ):
-                if _condition_matches(step.condition, clbits):
-                    self.apply(step)
-            elif isinstance(step, ApplyChannelStep) and (
-                occupied is None or all(t in occupied for t in step.target_indices)
-            ):
-                if _condition_matches(step.condition, clbits):
-                    self.apply_channel(step, rng)
-            elif isinstance(step, LossStep):
-                if _condition_matches(step.condition, clbits):
-                    if occupied is None:
-                        occupied = set(range(len(self._dims)))
-                        classical.occupied = occupied
-                    for index in step.target_indices:
-                        if index in occupied and rng.random() < step.p:
-                            occupied.discard(index)
-                            self.reset_subsystems([index], rng)
-            elif isinstance(step, PutStep):
-                if _condition_matches(step.condition, clbits) and occupied is not None:
-                    for index in step.target_indices:
-                        if index not in occupied:
-                            occupied.add(index)
-                            self.reset_subsystems([index], rng)
-            elif isinstance(step, MeasurementStep):
-                assert clbits is not None, "measurement requires classical digits"
-                bits = self.measure_subsystems(step.measured_indices, rng)
-                confusions = step.confusions or (None,) * len(bits)
-                maps = step.reported_digit_maps or (None,) * len(bits)
-                # The collapse keeps the physical outcome; only its mapped,
-                # optionally confused report is written to the clbits.
-                for m, c, bit, reported_map, confusion in zip(
-                    step.measured_indices,
-                    step.classical_indices,
-                    bits,
-                    maps,
-                    confusions,
-                ):
-                    if occupied is not None and m not in occupied:
-                        clbits[c] = ERASURE_DIGIT
-                    else:
-                        clbits[c] = _report_digit(
-                            _map_physical_digit(bit, reported_map), confusion, rng
-                        )
-            elif isinstance(step, ResetStep):
-                if _condition_matches(step.condition, clbits) and (
-                    occupied is None or all(t in occupied for t in step.reset_indices)
-                ):
-                    self.reset_subsystems(step.reset_indices, rng)
-        # Unwritten report digits are zero even when no register was needed.
-        return tuple(clbits) if clbits is not None else (0,) * self._n_clbits
 
 
 # --- statevector engine ---
