@@ -353,3 +353,20 @@ def _apply_kraus_sum(
     for kraus in kraus_ops:
         new += apply_local(rho, kraus, targets)
     return new
+
+
+def _sample_unitary(
+    branches: tuple[np.ndarray, tuple[np.ndarray, ...], tuple[bool, ...]],
+    rng: np.random.Generator,
+) -> np.ndarray | None:
+    """Draw one scaled-unitary branch, returning None for an identity.
+
+    Probabilities are state-independent and consume exactly one RNG draw.
+    Returned operators are already unit-norm; identity branches need no
+    state access, application, or defensive copy.
+    """
+    probabilities, unitaries, identities = branches
+    chosen = int(rng.choice(len(probabilities), p=probabilities / probabilities.sum()))
+    if identities[chosen]:
+        return None
+    return unitaries[chosen]

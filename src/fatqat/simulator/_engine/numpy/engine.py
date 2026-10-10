@@ -111,6 +111,7 @@ from .kernels import (
     _reset_density_matrix,
     _project_statevector,
     _statevector_probabilities,
+    _sample_unitary,
 )
 from ..parallel import _run_shots_in_processes
 from ..state import ClassicalState, EvolutionState, QuantumState
@@ -650,36 +651,19 @@ class NumpySVEngine(_NumpyMatrixEngine):
     def apply_channel(self, step: ApplyChannelStep, rng: np.random.Generator) -> None:
         """Sample one Kraus branch, by the cheapest sampler the operators allow.
 
-        A channel of scaled unitaries takes `_apply_sampled_unitary`, which
-        draws from a fixed probability vector; everything else takes the
-        general quantum-jump path. Both consume exactly one rng draw.
+        A channel of scaled unitaries draws from a fixed probability vector;
+        everything else takes the general quantum-jump path. Both consume
+        exactly one rng draw.
         """
         branches = self._channel_routes.resolve(step)
         if branches is None:
             self._apply_kraus_jump(step, rng)
         else:
-            self._apply_sampled_unitary(branches, step.target_indices, rng)
-
-    def _apply_sampled_unitary(
-        self,
-        branches: tuple[np.ndarray, tuple[np.ndarray, ...], tuple[bool, ...]],
-        targets: tuple[int, ...],
-        rng: np.random.Generator,
-    ) -> None:
-        """Draw one branch of a scaled-unitary channel and apply only that one.
-
-        Nothing reads the state except the apply itself: the weights are
-        state-independent, the operators are already unit-norm, and a draw on
-        the identity returns without touching an amplitude. Only one operator
-        is ever applied, so the state needs no defensive copy.
-        """
-        probabilities, unitaries, identities = branches
-        chosen = int(
-            rng.choice(len(probabilities), p=probabilities / probabilities.sum())
-        )
-        if identities[chosen]:
-            return
-        self._state = self._apply_local(self.state, unitaries[chosen], targets)
+            unitary = _sample_unitary(branches, rng)
+            if unitary is not None:
+                self._state = self._apply_local(
+                    self.state, unitary, step.target_indices
+                )
 
     def _apply_kraus_jump(
         self, step: ApplyChannelStep, rng: np.random.Generator
