@@ -1,0 +1,312 @@
+"""Shared coset arithmetic for Numba matrix engines."""
+
+from __future__ import annotations
+
+import numpy as np
+from numba import njit, prange
+
+# Gate-matrix structure codes. A diagonal or (phased) permutation matrix has at
+# most one nonzero per row, so its application is a single multiply per amplitude
+# instead of the D-term dot product a dense row needs - a machine-independent
+# constant-factor win that covers most common gates (Z/S/T/RZ/CPhase/CZ are
+# diagonal; X/CX/CCX/SWAP/iSwap are permutations).
+_DENSE = 0
+_DIAGONAL = 1
+_PERMUTATION = 2
+
+
+@njit(cache=True)
+def _spread_base(
+    start: int, comp_strides: np.ndarray, comp_dims: np.ndarray, counter: np.ndarray
+) -> int:  # pragma: no cover - compiled by Numba
+    """Spread coset index ``start`` into odometer ``counter``; return its flat base."""
+    base = 0
+    remainder = start
+    for i in range(comp_strides.shape[0]):
+        digit = remainder % comp_dims[i]
+        remainder = remainder // comp_dims[i]
+        counter[i] = digit
+        base += digit * comp_strides[i]
+    return base
+
+
+@njit(cache=True, inline="always")
+def _advance_base(
+    base: int, comp_strides: np.ndarray, comp_dims: np.ndarray, counter: np.ndarray
+) -> int:  # pragma: no cover - compiled by Numba
+    """Advance the odometer one coset, returning the next flat base."""
+    for i in range(comp_strides.shape[0]):
+        counter[i] += 1
+        base += comp_strides[i]
+        if counter[i] < comp_dims[i]:
+            return base
+        counter[i] = 0
+        base -= comp_strides[i] * comp_dims[i]
+    return base
+
+
+@njit(cache=True)
+def _apply_dense_range(
+    state, matrix, offsets, comp_strides, comp_dims, start, end
+) -> None:  # pragma: no cover - compiled by Numba
+    """Dense ``D x D`` application to cosets ``[start, end)``: ``D``-term dot per row.
+
+    Cosets partition the amplitudes by non-target ("complement") digits; within a
+    coset the ``D`` target amplitudes sit at ``base + offsets[c]`` and the matrix
+    maps them among themselves. ``base`` is spread from ``start`` once, then the
+    range is walked with a division-free odometer; disjoint cosets keep the result
+    independent of how the range is split.
+    """
+    local_dim = offsets.shape[0]
+    counter = np.empty(comp_strides.shape[0], dtype=np.int64)
+    base = _spread_base(start, comp_strides, comp_dims, counter)
+    updated = np.empty(local_dim, dtype=np.complex128)
+    for _ in range(start, end):
+        for r in range(local_dim):
+            acc = 0.0 + 0.0j
+            for c in range(local_dim):
+                acc += matrix[r, c] * state[base + offsets[c]]
+            updated[r] = acc
+        for r in range(local_dim):
+            state[base + offsets[r]] = updated[r]
+        base = _advance_base(base, comp_strides, comp_dims, counter)
+
+
+@njit(cache=True)
+def _apply_diagonal_range(
+    state, diagonal, offsets, comp_strides, comp_dims, start, end
+) -> None:  # pragma: no cover - compiled by Numba
+    """Diagonal application: scale each amplitude in place (no gather, no dot)."""
+    local_dim = offsets.shape[0]
+    counter = np.empty(comp_strides.shape[0], dtype=np.int64)
+    base = _spread_base(start, comp_strides, comp_dims, counter)
+    for _ in range(start, end):
+        for r in range(local_dim):
+            state[base + offsets[r]] *= diagonal[r]
+        base = _advance_base(base, comp_strides, comp_dims, counter)
+
+
+@njit(cache=True)
+def _apply_permutation_range(
+    state, columns, values, offsets, comp_strides, comp_dims, start, end
+) -> None:  # pragma: no cover - compiled by Numba
+    """Permutation application: one gather then one scaled scatter per coset."""
+    local_dim = offsets.shape[0]
+    counter = np.empty(comp_strides.shape[0], dtype=np.int64)
+    base = _spread_base(start, comp_strides, comp_dims, counter)
+    gathered = np.empty(local_dim, dtype=np.complex128)
+    for _ in range(start, end):
+        for c in range(local_dim):
+            gathered[c] = state[base + offsets[c]]
+        for r in range(local_dim):
+            state[base + offsets[r]] = values[r] * gathered[columns[r]]
+        base = _advance_base(base, comp_strides, comp_dims, counter)
+
+
+@njit(cache=True)
+def _apply_resolved_range(
+    state, code, matrix, columns, values, offsets, comp_strides, comp_dims, start, end
+) -> None:  # pragma: no cover - compiled by Numba
+    """Route one coset range to the structure-specialized kernel."""
+    if code == _DIAGONAL:
+        _apply_diagonal_range(
+            state, values, offsets, comp_strides, comp_dims, start, end
+        )
+    elif code == _PERMUTATION:
+        _apply_permutation_range(
+            state, columns, values, offsets, comp_strides, comp_dims, start, end
+        )
+    else:
+        _apply_dense_range(state, matrix, offsets, comp_strides, comp_dims, start, end)
+
+
+@njit(cache=True)
+def _apply_resolved_serial(
+    state, code, matrix, columns, values, offsets, comp_strides, comp_dims, num_cosets
+) -> np.ndarray:  # pragma: no cover - compiled by Numba
+    """Single-threaded application of an already-classified gate."""
+    _apply_resolved_range(
+        state,
+        code,
+        matrix,
+        columns,
+        values,
+        offsets,
+        comp_strides,
+        comp_dims,
+        0,
+        num_cosets,
+    )
+    return state
+
+
+@njit(cache=True, parallel=True)
+def _apply_resolved_parallel(
+    state,
+    code,
+    matrix,
+    columns,
+    values,
+    offsets,
+    comp_strides,
+    comp_dims,
+    num_cosets,
+    n_chunks,
+) -> np.ndarray:  # pragma: no cover - compiled by Numba
+    """Parallel application of an already-classified gate over coset chunks."""
+    for chunk in prange(n_chunks):  # pylint: disable=not-an-iterable
+        start = chunk * num_cosets // n_chunks
+        end = (chunk + 1) * num_cosets // n_chunks
+        if start < end:
+            _apply_resolved_range(
+                state,
+                code,
+                matrix,
+                columns,
+                values,
+                offsets,
+                comp_strides,
+                comp_dims,
+                start,
+                end,
+            )
+    return state
+
+
+# --- sparse coset kernel (density-matrix channel super-operators) ---
+#
+# A channel super-operator ``sum_i kron(K_i, conj(K_i))`` is often mostly zero
+# even when neither diagonal nor a permutation (two-qubit depolarizing fills
+# ``2 d**2 - d`` of ``d**4`` entries), which `_classify_matrix` calls dense.
+# These kernels walk a CSR of the exact nonzeros in column order - bit-identical
+# to the dense walk, at a fraction of the multiplies. `NumbaDMEngine` only.
+
+
+@njit(cache=True)
+def _apply_sparse_range(
+    state, indptr, indices, data, offsets, comp_strides, comp_dims, start, end
+) -> None:  # pragma: no cover - compiled by Numba
+    """Sparse ``D x D`` (CSR) application to cosets ``[start, end)``."""
+    local_dim = offsets.shape[0]
+    counter = np.empty(comp_strides.shape[0], dtype=np.int64)
+    base = _spread_base(start, comp_strides, comp_dims, counter)
+    gathered = np.empty(local_dim, dtype=np.complex128)
+    updated = np.empty(local_dim, dtype=np.complex128)
+    for _ in range(start, end):
+        for c in range(local_dim):
+            gathered[c] = state[base + offsets[c]]
+        for r in range(local_dim):
+            acc = 0.0 + 0.0j
+            for k in range(indptr[r], indptr[r + 1]):
+                acc += data[k] * gathered[indices[k]]
+            updated[r] = acc
+        for r in range(local_dim):
+            state[base + offsets[r]] = updated[r]
+        base = _advance_base(base, comp_strides, comp_dims, counter)
+
+
+@njit(cache=True)
+def _apply_sparse_serial(
+    state, indptr, indices, data, offsets, comp_strides, comp_dims, num_cosets
+) -> np.ndarray:  # pragma: no cover - compiled by Numba
+    """Single-threaded sparse super-operator application."""
+    _apply_sparse_range(
+        state, indptr, indices, data, offsets, comp_strides, comp_dims, 0, num_cosets
+    )
+    return state
+
+
+@njit(cache=True, parallel=True)
+def _apply_sparse_parallel(
+    state, indptr, indices, data, offsets, comp_strides, comp_dims, num_cosets, n_chunks
+) -> np.ndarray:  # pragma: no cover - compiled by Numba
+    """Parallel sparse super-operator application over coset chunks."""
+    for chunk in prange(n_chunks):  # pylint: disable=not-an-iterable
+        start = chunk * num_cosets // n_chunks
+        end = (chunk + 1) * num_cosets // n_chunks
+        if start < end:
+            _apply_sparse_range(
+                state,
+                indptr,
+                indices,
+                data,
+                offsets,
+                comp_strides,
+                comp_dims,
+                start,
+                end,
+            )
+    return state
+
+
+def _run_resolved(
+    state: np.ndarray,
+    matrix: np.ndarray,
+    plan: tuple,
+    code: int,
+    columns: np.ndarray,
+    values: np.ndarray,
+) -> np.ndarray:
+    """Launch an already-classified matrix through a precomputed apply plan.
+
+    Routes to the serial or parallel coset kernel by the plan's chunk count.
+    Shared by the statevector launch path and the density-matrix
+    super-operator pass; ``state`` must be contiguous ``complex128`` and is
+    updated in place (and returned).
+    """
+    offsets, comp_strides, comp_dims, num_cosets, n_chunks = plan
+    if n_chunks <= 1:
+        return _apply_resolved_serial(
+            state,
+            code,
+            matrix,
+            columns,
+            values,
+            offsets,
+            comp_strides,
+            comp_dims,
+            num_cosets,
+        )
+    return _apply_resolved_parallel(
+        state,
+        code,
+        matrix,
+        columns,
+        values,
+        offsets,
+        comp_strides,
+        comp_dims,
+        num_cosets,
+        n_chunks,
+    )
+
+
+def _run_resolved_sparse(
+    state: np.ndarray,
+    indptr: np.ndarray,
+    indices: np.ndarray,
+    data: np.ndarray,
+    plan: tuple,
+) -> np.ndarray:
+    """Launch a CSR super-operator through a precomputed apply plan.
+
+    The sparse analog of `_run_resolved`: same serial/parallel routing by the
+    plan's chunk count, same in-place update, but the coset kernel walks the
+    CSR nonzeros instead of a dense matrix (see the sparse kernels above).
+    """
+    offsets, comp_strides, comp_dims, num_cosets, n_chunks = plan
+    if n_chunks <= 1:
+        return _apply_sparse_serial(
+            state, indptr, indices, data, offsets, comp_strides, comp_dims, num_cosets
+        )
+    return _apply_sparse_parallel(
+        state,
+        indptr,
+        indices,
+        data,
+        offsets,
+        comp_strides,
+        comp_dims,
+        num_cosets,
+        n_chunks,
+    )

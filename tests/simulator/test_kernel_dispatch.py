@@ -318,10 +318,10 @@ def test_coset_chunking_is_bit_identical_across_chunk_counts():
     # The floor only ever changes the chunk COUNT; disjoint cosets make the
     # result independent of it, which is why moving the floor never changes an
     # amplitude. A dense gate applied as one chunk equals it applied as many.
-    from fatqat.simulator._engine.nb import (
+    from fatqat.simulator._engine.nb import _compute_apply_plan
+    from fatqat.simulator._engine.numba.kernels._apply import (
         _apply_resolved_parallel,
         _apply_resolved_serial,
-        _compute_apply_plan,
     )
 
     rng = np.random.default_rng(0)
