@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from math import prod
 
 import numpy as np
 
@@ -107,3 +108,77 @@ def _project_statevector(
     new[~keep] = 0.0
     norm = np.linalg.norm(new)
     return new / norm if norm > 0 else new
+
+
+def _apply_density_matrix(
+    rho: np.ndarray,
+    matrix: np.ndarray,
+    targets: Sequence[int],
+    dims: Sequence[int],
+    reversed_dims: tuple[int, ...],
+) -> np.ndarray:
+    """Return the local sandwich M rho M-adjoint using prepared dimensions."""
+    n = len(dims)
+    k = len(targets)
+    local_dims = tuple(dims[t] for t in targets)
+    tensor = rho.reshape(reversed_dims * 2)
+    m = np.asarray(matrix, dtype=complex).reshape(local_dims + local_dims)
+    ket_axes = [n - 1 - q for q in targets]
+    bra_axes = [2 * n - 1 - q for q in targets]
+    tensor = _contract_local(m, tensor, ket_axes, 2 * n, k)
+    tensor = _contract_local(m.conj(), tensor, bra_axes, 2 * n, k)
+    return tensor.reshape(rho.shape)
+
+
+def _density_matrix_probabilities(rho: np.ndarray) -> np.ndarray:
+    """Return normalized diagonal probabilities with round-off clipped."""
+    # A valid rho's diagonal is real and non-negative; clip tiny round-off so
+    # the values stay a valid sampling distribution.
+    probabilities = np.clip(np.real(np.diagonal(rho)), 0.0, None)
+    total = probabilities.sum()
+    return probabilities / total if total > 0 else probabilities
+
+
+def _project_density_matrix(
+    rho: np.ndarray,
+    idx: int,
+    measured_subsystems: Sequence[int],
+    dims: Sequence[int],
+) -> np.ndarray:
+    """Return a normalized physical projection without modifying the input."""
+    keep = _measured_keep_mask(idx, measured_subsystems, dims, rho.shape[0])
+    new = rho * keep[:, None] * keep[None, :]
+    trace = np.real(np.trace(new))
+    return new / trace if trace > 0 else new
+
+
+def _reset_density_matrix(
+    rho: np.ndarray,
+    indices: Sequence[int],
+    dims: Sequence[int],
+    reversed_dims: tuple[int, ...],
+) -> np.ndarray:
+    """Trace out nonempty targets and reprepare their joint zero state."""
+    n = len(dims)
+    targets = tuple(indices)
+    local_dims = tuple(dims[t] for t in targets)
+    dt = prod(local_dims)
+    rest = rho.shape[0] // dt
+
+    tensor = rho.reshape(reversed_dims * 2)
+    ket_axes = [n - 1 - q for q in targets]
+    bra_axes = [2 * n - 1 - q for q in targets]
+    moved = ket_axes + bra_axes
+    # `remaining` stays ascending, so rest-ket axes precede rest-bra axes and
+    # the (dt, dt, rest, rest) regroup below is valid.
+    remaining = [ax for ax in range(2 * n) if ax not in moved]
+    block = np.transpose(tensor, moved + remaining).reshape(dt, dt, rest, rest)
+
+    rho_rest = np.trace(block, axis1=0, axis2=1)
+    post = np.zeros_like(block)
+    post[0, 0] = rho_rest
+
+    rest_shape = tuple((reversed_dims * 2)[ax] for ax in remaining)
+    post = post.reshape(local_dims + local_dims + rest_shape)
+    inverse_perm = np.argsort(moved + remaining)
+    return np.transpose(post, inverse_perm).reshape(rho.shape)

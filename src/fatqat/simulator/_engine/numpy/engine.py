@@ -94,10 +94,13 @@ from .._execution_policy import (
 )
 from ..base import MatrixEngine, _shot_seed_sequences
 from .kernels import (
+    _apply_density_matrix,
     _apply_statevector,
     _contract_local,
+    _density_matrix_probabilities,
     _digit,
-    _measured_keep_mask,
+    _project_density_matrix,
+    _reset_density_matrix,
     _project_statevector,
     _statevector_probabilities,
 )
@@ -826,23 +829,12 @@ class NumpyDMEngine(_NumpyMatrixEngine):
         matrix need not be unitary: gates and Kraus operators share this
         primitive, differing only in whether the caller sums over terms.
         """
-        n = len(self._dims)
-        k = len(targets)
-        local_dims = tuple(self._dims[t] for t in targets)
-        tensor = rho.reshape(self._reversed_dims * 2)
-        m = np.asarray(matrix, dtype=complex).reshape(local_dims + local_dims)
-        ket_axes = [n - 1 - q for q in targets]
-        bra_axes = [2 * n - 1 - q for q in targets]
-        tensor = _contract_local(m, tensor, ket_axes, 2 * n, k)
-        tensor = _contract_local(m.conj(), tensor, bra_axes, 2 * n, k)
-        return tensor.reshape(rho.shape)
+        return _apply_density_matrix(
+            rho, matrix, targets, self._dims, self._reversed_dims
+        )
 
     def probabilities(self) -> np.ndarray:
-        # A valid rho's diagonal is real and non-negative; clip tiny round-off so
-        # the values stay a valid sampling distribution.
-        probabilities = np.clip(np.real(np.diagonal(self.state)), 0.0, None)
-        total = probabilities.sum()
-        return probabilities / total if total > 0 else probabilities
+        return _density_matrix_probabilities(self.state)
 
     def collapse(
         self, measured_subsystems: Sequence[int], rng: np.random.Generator
@@ -850,10 +842,7 @@ class NumpyDMEngine(_NumpyMatrixEngine):
         rho = self.state
         size = rho.shape[0]
         idx = int(rng.choice(size, p=self.probabilities()))
-        keep = _measured_keep_mask(idx, measured_subsystems, self._dims, size)
-        new = rho * keep[:, None] * keep[None, :]
-        trace = np.real(np.trace(new))
-        self._state = new / trace if trace > 0 else new
+        self._state = _project_density_matrix(rho, idx, measured_subsystems, self._dims)
         return idx
 
     def reset_subsystems(
@@ -866,30 +855,9 @@ class NumpyDMEngine(_NumpyMatrixEngine):
         accepted only for interface parity).
         """
         assert len(indices) >= 1, "reset_subsystems requires at least one index"
-        rho = self.state
-        n = len(self._dims)
-        targets = tuple(indices)
-        local_dims = tuple(self._dims[t] for t in targets)
-        dt = prod(local_dims)
-        rest = rho.shape[0] // dt
-
-        tensor = rho.reshape(self._reversed_dims * 2)
-        ket_axes = [n - 1 - q for q in targets]
-        bra_axes = [2 * n - 1 - q for q in targets]
-        moved = ket_axes + bra_axes
-        # `remaining` stays ascending, so rest-ket axes precede rest-bra axes and
-        # the (dt, dt, rest, rest) regroup below is valid.
-        remaining = [ax for ax in range(2 * n) if ax not in moved]
-        block = np.transpose(tensor, moved + remaining).reshape(dt, dt, rest, rest)
-
-        rho_rest = np.trace(block, axis1=0, axis2=1)
-        post = np.zeros_like(block)
-        post[0, 0] = rho_rest
-
-        rest_shape = tuple((self._reversed_dims * 2)[ax] for ax in remaining)
-        post = post.reshape(local_dims + local_dims + rest_shape)
-        inverse_perm = np.argsort(moved + remaining)
-        self._state = np.transpose(post, inverse_perm).reshape(rho.shape)
+        self._state = _reset_density_matrix(
+            self.state, indices, self._dims, self._reversed_dims
+        )
 
 
 # --- operator engines ---
