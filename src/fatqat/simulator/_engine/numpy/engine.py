@@ -100,6 +100,8 @@ from .kernels import (
     _allocate_unitary,
     _allocate_superoperator,
     _apply_density_matrix,
+    _apply_kraus_jump,
+    _apply_kraus_sum,
     _apply_statevector,
     _apply_superoperator,
     _apply_unitary,
@@ -692,16 +694,9 @@ class NumpySVEngine(_NumpyMatrixEngine):
         ``self.state`` across branches would let an in-place kernel (the Numba
         subclass's) corrupt the source mid-loop.
         """
-        source = self.state
-        branches = [
-            self._apply_local(source.copy(), kraus, step.target_indices)
-            for kraus in step.kraus_ops
-        ]
-        norms = np.array([np.real(np.vdot(b, b)) for b in branches])
-        # CPTP guarantees the norms sum to <psi|psi> = 1; renormalize anyway so
-        # rng.choice never rejects the distribution over float round-off.
-        chosen = int(rng.choice(len(branches), p=norms / norms.sum()))
-        self._state = branches[chosen] / np.sqrt(norms[chosen])
+        self._state = _apply_kraus_jump(
+            self.state, step.kraus_ops, step.target_indices, rng, self._apply_local
+        )
 
     def _apply_local(
         self, state: np.ndarray, matrix: np.ndarray, targets: Sequence[int]
@@ -775,11 +770,9 @@ class NumpyDMEngine(_NumpyMatrixEngine):
         which is what makes this exact. No randomness is consumed (``rng`` is
         accepted only for interface parity, like reset).
         """
-        rho = self.state
-        new = np.zeros_like(rho)
-        for kraus in step.kraus_ops:
-            new += self._apply_local_sandwich(rho, kraus, step.target_indices)
-        self._state = new
+        self._state = _apply_kraus_sum(
+            self.state, step.kraus_ops, step.target_indices, self._apply_local_sandwich
+        )
 
     def _apply_local_sandwich(
         self, rho: np.ndarray, matrix: np.ndarray, targets: Sequence[int]

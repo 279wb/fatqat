@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from math import prod
 
 import numpy as np
@@ -320,3 +320,36 @@ def _apply_superoperator(
     tensor = _contract_local(m, tensor, ket_axes, total, k)
     tensor = _contract_local(m.conj(), tensor, bra_axes, total, k)
     return tensor.reshape(rho.shape)
+
+
+def _apply_kraus_jump(
+    source: np.ndarray,
+    kraus_ops: tuple[np.ndarray, ...],
+    targets: Sequence[int],
+    rng: np.random.Generator,
+    apply_local: Callable[[np.ndarray, np.ndarray, Sequence[int]], np.ndarray],
+) -> np.ndarray:
+    """Sample and normalize one Kraus branch, consuming one RNG draw.
+
+    Each branch starts from a copy so an in-place local application cannot
+    corrupt the source used by the remaining branches.
+    """
+    branches = [apply_local(source.copy(), kraus, targets) for kraus in kraus_ops]
+    norms = np.array([np.real(np.vdot(b, b)) for b in branches])
+    # CPTP guarantees the norms sum to <psi|psi> = 1; renormalize anyway so
+    # rng.choice never rejects the distribution over float round-off.
+    chosen = int(rng.choice(len(branches), p=norms / norms.sum()))
+    return branches[chosen] / np.sqrt(norms[chosen])
+
+
+def _apply_kraus_sum(
+    rho: np.ndarray,
+    kraus_ops: tuple[np.ndarray, ...],
+    targets: Sequence[int],
+    apply_local: Callable[[np.ndarray, np.ndarray, Sequence[int]], np.ndarray],
+) -> np.ndarray:
+    """Sum local Kraus sandwiches for a density matrix or superoperator."""
+    new = np.zeros_like(rho)
+    for kraus in kraus_ops:
+        new += apply_local(rho, kraus, targets)
+    return new
