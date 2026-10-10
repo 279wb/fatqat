@@ -128,12 +128,10 @@ from .numba.kernels._apply import (
     _DENSE,
     _DIAGONAL,
     _PERMUTATION,
-    _advance_base,
     _apply_resolved_range,
     _classify_matrix,
     _run_resolved,
     _run_resolved_sparse,
-    _spread_base,
 )
 from .numba.kernels._channel import _apply_channel_step
 from .numba.kernels._measurement import (
@@ -144,6 +142,12 @@ from .numba.kernels._measurement import (
     _sv_reset_kernel,
     _dm_probabilities_kernel,
     _dm_project_kernel,
+)
+from .numba.kernels._operator import (
+    _apply_dense_columns,
+    _apply_diagonal_columns,
+    _apply_permutation_columns,
+    _apply_sparse_columns,
 )
 from .numpy.engine import (
     _NumpyOperatorEngine,
@@ -404,126 +408,6 @@ _KERNEL_SPECS: dict[BuiltinKernelKey, int] = {
 
 
 @njit(cache=True)
-def _dense_columns(
-    state, matrix, offsets, comp_strides, comp_dims, num_cosets, scratch, lo, hi
-) -> None:  # pragma: no cover - compiled by Numba
-    """Dense local matrix applied to columns ``[lo, hi)`` of every coset."""
-    local_dim = offsets.shape[0]
-    width = hi - lo
-    counter = np.empty(comp_strides.shape[0], dtype=np.int64)
-    base = _spread_base(0, comp_strides, comp_dims, counter)
-    for _ in range(num_cosets):
-        for r in range(local_dim):
-            out = r * width
-            for j in range(width):
-                scratch[out + j] = 0.0 + 0.0j
-            for c in range(local_dim):
-                factor = matrix[r, c]
-                src = base + offsets[c] + lo
-                for j in range(width):
-                    scratch[out + j] += factor * state[src + j]
-        for r in range(local_dim):
-            dst = base + offsets[r] + lo
-            out = r * width
-            for j in range(width):
-                state[dst + j] = scratch[out + j]
-        base = _advance_base(base, comp_strides, comp_dims, counter)
-
-
-@njit(cache=True)
-def _diagonal_columns(
-    state, diagonal, offsets, comp_strides, comp_dims, num_cosets, scratch, lo, hi
-) -> None:  # pragma: no cover - compiled by Numba
-    """Diagonal application: scale in place, no gather and no scratch."""
-    local_dim = offsets.shape[0]
-    counter = np.empty(comp_strides.shape[0], dtype=np.int64)
-    base = _spread_base(0, comp_strides, comp_dims, counter)
-    for _ in range(num_cosets):
-        for r in range(local_dim):
-            factor = diagonal[r]
-            dst = base + offsets[r] + lo
-            for j in range(hi - lo):
-                state[dst + j] *= factor
-        base = _advance_base(base, comp_strides, comp_dims, counter)
-
-
-@njit(cache=True)
-def _permutation_columns(
-    state,
-    columns,
-    values,
-    offsets,
-    comp_strides,
-    comp_dims,
-    num_cosets,
-    scratch,
-    lo,
-    hi,
-) -> None:  # pragma: no cover - compiled by Numba
-    """Permutation application: one gather then one scaled scatter per coset."""
-    local_dim = offsets.shape[0]
-    width = hi - lo
-    counter = np.empty(comp_strides.shape[0], dtype=np.int64)
-    base = _spread_base(0, comp_strides, comp_dims, counter)
-    for _ in range(num_cosets):
-        for c in range(local_dim):
-            src = base + offsets[c] + lo
-            out = c * width
-            for j in range(width):
-                scratch[out + j] = state[src + j]
-        for r in range(local_dim):
-            factor = values[r]
-            dst = base + offsets[r] + lo
-            out = columns[r] * width
-            for j in range(width):
-                state[dst + j] = factor * scratch[out + j]
-        base = _advance_base(base, comp_strides, comp_dims, counter)
-
-
-@njit(cache=True)
-def _sparse_columns(
-    state,
-    indptr,
-    indices,
-    data,
-    offsets,
-    comp_strides,
-    comp_dims,
-    num_cosets,
-    scratch,
-    lo,
-    hi,
-) -> None:  # pragma: no cover - compiled by Numba
-    """CSR super-operator applied to columns ``[lo, hi)`` of every coset."""
-    local_dim = offsets.shape[0]
-    width = hi - lo
-    counter = np.empty(comp_strides.shape[0], dtype=np.int64)
-    base = _spread_base(0, comp_strides, comp_dims, counter)
-    updated = local_dim * width
-    for _ in range(num_cosets):
-        for c in range(local_dim):
-            src = base + offsets[c] + lo
-            out = c * width
-            for j in range(width):
-                scratch[out + j] = state[src + j]
-        for r in range(local_dim):
-            out = updated + r * width
-            for j in range(width):
-                scratch[out + j] = 0.0 + 0.0j
-            for k in range(indptr[r], indptr[r + 1]):
-                factor = data[k]
-                src = indices[k] * width
-                for j in range(width):
-                    scratch[out + j] += factor * scratch[src + j]
-        for r in range(local_dim):
-            dst = base + offsets[r] + lo
-            out = updated + r * width
-            for j in range(width):
-                state[dst + j] = scratch[out + j]
-        base = _advance_base(base, comp_strides, comp_dims, counter)
-
-
-@njit(cache=True)
 def _run_operator_steps(
     state, plan, lo, hi, scratch
 ) -> None:  # pragma: no cover - compiled by Numba
@@ -557,13 +441,13 @@ def _run_operator_steps(
         step_code = code[s]
         if step_code == _DIAGONAL:
             values = sv_flat_values[sv_ptr[s] : sv_ptr[s + 1]]
-            _diagonal_columns(
+            _apply_diagonal_columns(
                 state, values, offsets, strides, comp_dims, cosets, scratch, lo, hi
             )
         elif step_code == _PERMUTATION:
             cols = sv_flat_columns[sv_ptr[s] : sv_ptr[s + 1]]
             values = sv_flat_values[sv_ptr[s] : sv_ptr[s + 1]]
-            _permutation_columns(
+            _apply_permutation_columns(
                 state,
                 cols,
                 values,
@@ -579,7 +463,7 @@ def _run_operator_steps(
             indptr = sp_indptr_flat[sp_indptr_ptr[s] : sp_indptr_ptr[s + 1]]
             indices = sp_indices_flat[sp_data_ptr[s] : sp_data_ptr[s + 1]]
             data = sp_data_flat[sp_data_ptr[s] : sp_data_ptr[s + 1]]
-            _sparse_columns(
+            _apply_sparse_columns(
                 state,
                 indptr,
                 indices,
@@ -594,7 +478,7 @@ def _run_operator_steps(
             )
         else:
             matrix = mat_flat[mat_ptr[s] : mat_ptr[s + 1]].reshape(local_dim, local_dim)
-            _dense_columns(
+            _apply_dense_columns(
                 state, matrix, offsets, strides, comp_dims, cosets, scratch, lo, hi
             )
 
