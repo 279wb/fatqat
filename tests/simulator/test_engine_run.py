@@ -14,7 +14,7 @@ from fatqat._backends.steps import (
     PutStep,
     ResetStep,
 )
-from fatqat.simulator._engine.np import NumpySVEngine, NumpyUnitaryEngine
+from fatqat.simulator._engine.numpy.engine import NumpySVEngine, NumpyUnitaryEngine
 from fatqat.errors import BackendValidationError
 from fatqat.simulator._engine._execution_policy import _ExecutionPolicy
 

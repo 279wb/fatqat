@@ -66,8 +66,8 @@ from typing import Any, Literal
 
 import numpy as np
 
-from ..._expectation import expectation_density_matrix, expectation_statevector
-from .._execution_contract import (
+from ...._expectation import expectation_density_matrix, expectation_statevector
+from ..._execution_contract import (
     _ResultRequest as ResultRequest,
     RawResult,
     _InitialEvolutionState as InitialEvolutionState,
@@ -76,7 +76,7 @@ from .._execution_contract import (
     _QuantumCapabilities,
     _TrajectoryCapabilities,
 )
-from ..._backends.steps import (
+from ...._backends.steps import (
     ApplyChannelStep,
     ApplyMatrixStep,
     LossStep,
@@ -85,17 +85,17 @@ from ..._backends.steps import (
     PutStep,
     ResolvedStep,
 )
-from ...implementation.matrices import shift_matrix
-from ...noise.base import _sampled_unitary_branches
-from ...result import _decode_engine_indices_to_clbit_rows, reduce_to_counts
-from ._execution_policy import (
+from ....implementation.matrices import shift_matrix
+from ....noise.base import _sampled_unitary_branches
+from ....result import _decode_engine_indices_to_clbit_rows, reduce_to_counts
+from .._execution_policy import (
     _ExecutionPolicy as ExecutionPolicy,
     _materialization_policy,
 )
-from .base import MatrixEngine, _shot_seed_sequences
-from .numpy.kernels import _contract_local, _digit, _measured_keep_mask
-from .parallel import _run_shots_in_processes
-from .state import ClassicalState, EvolutionState, QuantumState
+from ..base import MatrixEngine, _shot_seed_sequences
+from .kernels import _contract_local, _digit, _measured_keep_mask
+from ..parallel import _run_shots_in_processes
+from ..state import ClassicalState, EvolutionState, QuantumState
 
 # What `_sampled_unitary_branches` resolves a channel step to: branch
 # probabilities, unit-norm operators, identity flags - or None for a channel

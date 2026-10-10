@@ -9,7 +9,7 @@ from fatqat.simulator._execution_contract import (
 )
 from fatqat._backends.steps import ApplyMatrixStep, MeasurementStep
 from fatqat.implementation.matrices import shift_matrix
-from fatqat.simulator._engine.np import NumpySVEngine
+from fatqat.simulator._engine.numpy.engine import NumpySVEngine
 from fatqat.simulator._engine._execution_policy import _ExecutionPolicy
 
 

@@ -25,7 +25,7 @@ from fatqat.simulator._engine.nb import (
     _superop_csr,
     NumbaSVEngine,
 )
-from fatqat.simulator._engine.np import NumpySVEngine
+from fatqat.simulator._engine.numpy.engine import NumpySVEngine
 from fatqat.noise import Depolarizing
 from fatqat.noise.catalog import depolarizing_rule
 from fatqat.noise.nb import _kraus_stack, _kraus_superop_kernel

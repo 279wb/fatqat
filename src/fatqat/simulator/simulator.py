@@ -298,7 +298,7 @@ class Simulator:
                 ) from exc
             engine_name = spec.numba_engine_name
         else:
-            from ._engine import np as engine_module
+            from ._engine.numpy import engine as engine_module
 
             engine_name = spec.numpy_engine_name
         self._engine_cls: type[MatrixEngine] = getattr(engine_module, engine_name)

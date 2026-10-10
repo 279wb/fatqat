@@ -18,7 +18,7 @@ from fatqat.noise import (
     TransitionRelaxation,
     default_channel_implementation_map,
 )
-from fatqat.simulator._engine.np import NumpySVEngine
+from fatqat.simulator._engine.numpy.engine import NumpySVEngine
 from fatqat.simulator._execution_contract import (
     _ExecutionContext,
     _InitialEvolutionState,

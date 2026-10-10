@@ -125,7 +125,7 @@ from ...noise.nb import (
 from ...result import reduce_to_counts
 from ._execution_policy import _ExecutionPolicy as ExecutionPolicy
 from .base import _shot_seed_sequences
-from .np import (
+from .numpy.engine import (
     _NumpyOperatorEngine,
     NumpyDMEngine,
     NumpySuperopEngine,
