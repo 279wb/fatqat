@@ -18,9 +18,9 @@ density matrix derives its table from the same declarations because the
 Kronecker product preserves structure (see below).
 
 - `NumbaSVEngine` replaces gate application (`apply` / `_apply_local`),
-  `probabilities`, `sample_indices`, and `collapse`. ``measure_subsystems`` /
-  ``reset_subsystems`` delegate to those, so they are Numba-routed without an
-  override.
+  `probabilities`, `sample_indices`, `collapse`, and `reset_subsystems`.
+  ``measure_subsystems`` delegates to collapse; reset uses direct digit shifts
+  shared with the compiled trajectory path.
 - `NumbaDMEngine` replaces `apply` / `apply_channel`, `probabilities`,
   `sample_indices`, and `collapse`. It reuses the *same* coset-walk kernels as
   the statevector path by viewing ``rho`` (shape ``(size, size)``) as a flat
@@ -141,7 +141,7 @@ from .numba.kernels._measurement import (
     _sample_indices_kernel,
     _sv_probabilities_kernel,
     _sv_project_kernel,
-    _sv_shift_subsystem,
+    _sv_reset_kernel,
     _dm_probabilities_kernel,
     _dm_project_kernel,
 )
@@ -854,17 +854,9 @@ def _reset_step(
     """Collapse the reset subsystems, then shift each measured branch to |0>."""
     start = rs_ptr[r]
     length = rs_len[r]
-    index = _sample_index_kernel(_sv_probabilities_kernel(state), u)
-    state = _sv_project_kernel(
-        state, rs_stride[start : start + length], rs_dim[start : start + length], index
+    return _sv_reset_kernel(
+        state, rs_stride[start : start + length], rs_dim[start : start + length], u
     )
-    for j in range(length):
-        sub_stride = rs_stride[start + j]
-        sub_dim = rs_dim[start + j]
-        outcome = (index // sub_stride) % sub_dim
-        if outcome != 0:
-            state = _sv_shift_subsystem(state, sub_stride, sub_dim, outcome)
-    return state
 
 
 @njit(cache=True, inline="always")
@@ -1278,10 +1270,9 @@ class NumbaSVEngine(NumpySVEngine):
     ) -> np.ndarray:
         """Apply a bare local matrix - the matrix-only fallback path.
 
-        For callers with no step to carry identity or cache against: the
-        inherited reset path's shift matrices and noise-channel Kraus
-        branches. One `_classify_matrix` scan (the same single rule the
-        standard path uses), then the same resolved kernels.
+        For callers with no step to carry identity or cache against, such as
+        noise-channel Kraus branches. One `_classify_matrix` scan (the same
+        single rule the standard path uses), then the same resolved kernels.
         """
         matrix = np.ascontiguousarray(matrix, dtype=np.complex128)
         d = matrix.shape[0]
@@ -1543,6 +1534,16 @@ class NumbaSVEngine(NumpySVEngine):
             np.ascontiguousarray(self.state), strides, dims, index
         )
         return index
+
+    def reset_subsystems(
+        self, indices: Sequence[int], rng: np.random.Generator
+    ) -> None:
+        """Reset a sampled branch to zero using Numba digit shifts and one draw."""
+        assert len(indices) >= 1, "reset_subsystems requires at least one index"
+        strides, dims = self._measured_layout(indices)
+        self._state = _sv_reset_kernel(
+            np.ascontiguousarray(self.state), strides, dims, float(rng.random())
+        )
 
     def _measured_layout(
         self, subsystems: Sequence[int]

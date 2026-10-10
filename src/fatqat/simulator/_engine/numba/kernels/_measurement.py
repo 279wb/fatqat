@@ -134,24 +134,34 @@ def _sv_project_kernel(
     return out
 
 
-@njit(cache=True)
-def _sv_shift_subsystem(
-    state: np.ndarray, stride: int, dim: int, outcome: int
+@njit(cache=True, inline="always")
+def _sv_reset_kernel(
+    state: np.ndarray,
+    reset_strides: np.ndarray,
+    reset_dims: np.ndarray,
+    u: float,
 ) -> np.ndarray:  # pragma: no cover - compiled by Numba
-    """Cyclically shift one subsystem's digit down by ``outcome`` (reset to |0>).
+    """Sample one branch, project, then shift the reset subsystems to zero.
 
-    Equivalent to applying ``shift_matrix(dim, -outcome)`` to the subsystem: the
-    amplitude with subsystem digit ``g`` moves to digit ``(g - outcome) mod dim``.
-    After a collapse only digit ``outcome`` is populated, so this relabels the
-    measured branch to |0>.
+    The caller supplies one uniform draw. Direct digit shifts avoid constructing
+    local shift matrices or routing reset through generic gate application.
     """
-    size = state.shape[0]
-    out = np.zeros(size, dtype=np.complex128)
-    for flat in range(size):
-        digit = (flat // stride) % dim
-        shifted = (digit - outcome + dim) % dim
-        out[flat + (shifted - digit) * stride] = state[flat]
-    return out
+    index = _sample_index_kernel(_sv_probabilities_kernel(state), u)
+    state = _sv_project_kernel(state, reset_strides, reset_dims, index)
+    for j in range(reset_strides.shape[0]):
+        sub_stride = reset_strides[j]
+        sub_dim = reset_dims[j]
+        outcome = (index // sub_stride) % sub_dim
+        if outcome != 0:
+            # Projection leaves only this digit populated. Move it to zero in
+            # the owned projected buffer instead of rotating a full new state.
+            shift = outcome * sub_stride
+            for base in range(0, state.shape[0], sub_stride * sub_dim):
+                for offset in range(sub_stride):
+                    source = base + shift + offset
+                    state[base + offset] = state[source]
+                    state[source] = 0.0
+    return state
 
 
 # --- density matrix ---

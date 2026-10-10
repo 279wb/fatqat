@@ -1,10 +1,21 @@
 import numpy as np
+import pytest
 
 from fatqat.simulator._engine.numpy.engine import NumpySVEngine
 from fatqat._backends.steps import ApplyMatrixStep
 
 _X = np.array([[0, 1], [1, 0]], dtype=complex)
 _H = np.array([[1, 1], [1, -1]], dtype=complex) / np.sqrt(2)
+
+
+@pytest.fixture(name="sv_engine_class", params=["numpy", "numba"])
+def fixture_sv_engine_class(request):
+    if request.param == "numba":
+        pytest.importorskip("numba")
+        from fatqat.simulator._engine.nb import NumbaSVEngine
+
+        return NumbaSVEngine
+    return NumpySVEngine
 
 
 def test_measure_qubit_deterministic_one():
@@ -34,11 +45,11 @@ def test_reset_qubit_from_one_returns_zero():
     assert np.allclose(eng.export_state(), np.array([1, 0], dtype=complex))
 
 
-def test_reset_qubit_on_entangled_pair_conditions_the_partner():
+def test_reset_qubit_on_entangled_pair_conditions_the_partner(sv_engine_class):
     # Bell pair (|00>+|11>)/sqrt2; reset qubit 0 -> partner is |0> or |1>, 50/50.
     outcomes = []
     for s in range(200):
-        eng = NumpySVEngine()
+        eng = sv_engine_class()
         eng.initialize((2, 2))
         eng.apply(ApplyMatrixStep(matrix=_H, target_indices=(0,)))
         cx = np.array(
@@ -93,15 +104,23 @@ def test_measure_subsystems_consumes_one_rng_draw_for_grouped_event():
     assert after_grouped == after_one_draw
 
 
-def test_reset_subsystems_resets_all_targets_with_one_grouped_collapse():
-    eng = NumpySVEngine()
-    eng.initialize((2, 2))
+def test_reset_subsystems_resets_all_targets_with_one_grouped_collapse(sv_engine_class):
+    eng = sv_engine_class()
+    eng.initialize((2, 3, 2))
     eng.apply(ApplyMatrixStep(matrix=_X, target_indices=(0,)))
-    eng.apply(ApplyMatrixStep(matrix=_X, target_indices=(1,)))
+    shift = np.roll(np.eye(3, dtype=complex), 2, axis=0)
+    eng.apply(ApplyMatrixStep(matrix=shift, target_indices=(1,)))
+    eng.apply(ApplyMatrixStep(matrix=_H, target_indices=(2,)))
+    rng = np.random.default_rng(0)
 
-    eng.reset_subsystems((0, 1), np.random.default_rng(0))
+    eng.reset_subsystems((1, 0), rng)
 
-    assert np.allclose(eng.export_state(), np.array([1, 0, 0, 0], dtype=complex))
+    expected = np.zeros(12, dtype=complex)
+    expected[[0, 6]] = 1 / np.sqrt(2)
+    assert np.allclose(eng.export_state(), expected)
+    reference_rng = np.random.default_rng(0)
+    reference_rng.random()
+    assert rng.random() == reference_rng.random()
 
 
 def test_single_qubit_wrappers_delegate_to_grouped_methods():
