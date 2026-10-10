@@ -14,7 +14,13 @@ from math import prod
 import numpy as np
 from numba import config as numba_config
 
-from ....._backends.steps import ApplyMatrixStep, BuiltinKernelKey, ResolvedStep
+from ....._backends.steps import (
+    ApplyChannelStep,
+    ApplyMatrixStep,
+    BuiltinKernelKey,
+    ResolvedStep,
+)
+from .....noise.nb import _kraus_stack, _kraus_superop_kernel
 from ._apply import _DENSE, _DIAGONAL, _PERMUTATION, _classify_matrix
 
 # Declared structure per canonical gate identity: the key-to-kernel table.
@@ -129,6 +135,70 @@ class _MatrixStructureCache:
         else:
             code = int(_classify_matrix(matrix, columns, values))
         resolved = (code, columns, values)
+        self._entries[id(step)] = (step, resolved)
+        return resolved
+
+
+class _SuperoperatorCache:
+    """Prepare gate/channel superoperators independently of workflow packing.
+
+    Per-step resolutions (matrix/code/columns/values/sparse) are keyed by
+    ``id(step)`` and pin the source step so recycled identities cannot alias.
+    Resolutions depend only on frozen gate/channel payloads, not system dimensions.
+    Trajectory initialization deliberately keeps them so each shot reuses the
+    once-per-plan construction and classification. Materializing the next plan
+    prunes steps it no longer uses through ``retain``.
+    """
+
+    def __init__(self):
+        self._entries: dict[int, tuple] = {}
+
+    def retain(self, plan: tuple[ResolvedStep, ...]) -> None:
+        """Keep only resolutions used by the next effective plan."""
+        active_ids = {id(step) for step in plan}
+        self._entries = {
+            step_id: entry
+            for step_id, entry in self._entries.items()
+            if step_id in active_ids
+        }
+
+    def resolve(
+        self, step: ApplyMatrixStep | ApplyChannelStep
+    ) -> tuple[np.ndarray, int, np.ndarray, np.ndarray, tuple | None]:
+        """Build and classify a step's super-operator once per plan.
+
+        For a gate the super-operator is ``kron(M, conj(M))``; the Kronecker
+        product preserves structure, so a kernel_key declared ``_DENSE`` skips
+        the scan and every other gate takes one `_classify_matrix` scan of the
+        super-operator. A channel's ``sum_i kron(K_i, conj(K_i))``
+        (`noise.nb._kraus_superop_kernel`) carries no key and is always
+        scanned - which is what lets a diagonal channel (phase damping) reach
+        the diagonal kernel.
+
+        A dense-classified but mostly-zero super-operator (e.g. depolarizing)
+        additionally gets a CSR (`_superop_csr`) so the pass can skip its zeros;
+        the returned ``sparse`` is that CSR or ``None``. Cached per step
+        (id-keyed, identity-pinned), resolved once per plan, not per trajectory.
+        """
+        cached = self._entries.get(id(step))
+        if cached is not None and cached[0] is step:
+            return cached[1]
+        if isinstance(step, ApplyMatrixStep):
+            m = np.ascontiguousarray(step.matrix, dtype=np.complex128)
+            superop = np.kron(m, m.conj())
+            declared_dense = _KERNEL_SPECS.get(step.kernel_key) == _DENSE
+        else:
+            superop = _kraus_superop_kernel(_kraus_stack(step.kraus_ops))
+            declared_dense = False
+        d = superop.shape[0]
+        columns = np.empty(d, dtype=np.int64)
+        values = np.empty(d, dtype=np.complex128)
+        if declared_dense:
+            code = _DENSE  # declared dense: nothing to extract, no scan
+        else:
+            code = int(_classify_matrix(superop, columns, values))
+        sparse = _superop_csr(superop) if code == _DENSE else None
+        resolved = (superop, code, columns, values, sparse)
         self._entries[id(step)] = (step, resolved)
         return resolved
 

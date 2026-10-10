@@ -114,8 +114,6 @@ from ...noise.nb import (
     _compile_channel_table,
     _compile_readout_table,
     _jump_branch_kernel,
-    _kraus_stack,
-    _kraus_superop_kernel,
     _report_digit_kernel,
 )
 from ...result import reduce_to_counts
@@ -152,13 +150,12 @@ from .numba.kernels._operator import (
     _apply_sparse_columns,
 )
 from .numba.kernels._preparation import (
-    _KERNEL_SPECS,
     _MatrixStructureCache,
+    _SuperoperatorCache,
     _MAX_THREADS,
     _MIN_SIZE_TO_THREAD_DM,
     _compute_apply_plan,
     _measured_layout,
-    _superop_csr,
 )
 from .numpy.engine import (
     _NumpyOperatorEngine,
@@ -1245,22 +1242,12 @@ class NumbaDMEngine(NumpyDMEngine):
         # doubled bra+ket system), keyed by target tuple. Depends only on
         # targets and the fixed dims; `initialize` clears it when dims change.
         self._sandwich_plans: dict[tuple[int, ...], tuple] = {}
-        # Per-step resolved super-operator (matrix/code/columns/values), keyed
-        # by id(step) with the step pinned in the value so a recycled id can
-        # never alias. A property of the step's frozen payload alone - not of
-        # system dims - so `initialize` deliberately does not clear it; the
-        # per-shot dynamic loop re-initializes per trajectory and must keep
-        # its once-per-plan resolutions.
-        # Materializing the next plan prunes steps it no longer uses.
-        self._superop_cache: dict[int, tuple] = {}
+        self._superoperators = _SuperoperatorCache()
+        # Bind once: DM and accumulated superoperators share numerical resolution.
+        self._resolve_superop = self._superoperators.resolve
 
     def _retain_step_caches(self, plan: tuple[ResolvedStep, ...]) -> None:
-        active_ids = {id(step) for step in plan}
-        self._superop_cache = {
-            step_id: entry
-            for step_id, entry in self._superop_cache.items()
-            if step_id in active_ids
-        }
+        self._superoperators.retain(plan)
 
     def configure_system(self, system_dims: Sequence[int], n_clbits: int = 0) -> None:
         dims_changed = tuple(int(dim) for dim in system_dims) != self._dims
@@ -1369,46 +1356,6 @@ class NumbaDMEngine(NumpyDMEngine):
             max_workers=max_workers,
             force_parallel=force_parallel,
         )
-
-    def _resolve_superop(
-        self, step: ApplyMatrixStep | ApplyChannelStep
-    ) -> tuple[np.ndarray, int, np.ndarray, np.ndarray, tuple | None]:
-        """Build and classify a step's super-operator once per plan.
-
-        For a gate the super-operator is ``kron(M, conj(M))``; the Kronecker
-        product preserves structure, so a kernel_key declared ``_DENSE`` skips
-        the scan and every other gate takes one `_classify_matrix` scan of the
-        super-operator. A channel's ``sum_i kron(K_i, conj(K_i))``
-        (`noise.nb._kraus_superop_kernel`) carries no key and is always
-        scanned - which is what lets a diagonal channel (phase damping) reach
-        the diagonal kernel.
-
-        A dense-classified but mostly-zero super-operator (e.g. depolarizing)
-        additionally gets a CSR (`_superop_csr`) so the pass can skip its zeros;
-        the returned ``sparse`` is that CSR or ``None``. Cached per step
-        (id-keyed, identity-pinned), resolved once per plan, not per trajectory.
-        """
-        cached = self._superop_cache.get(id(step))
-        if cached is not None and cached[0] is step:
-            return cached[1]
-        if isinstance(step, ApplyMatrixStep):
-            m = np.ascontiguousarray(step.matrix, dtype=np.complex128)
-            superop = np.kron(m, m.conj())
-            declared_dense = _KERNEL_SPECS.get(step.kernel_key) == _DENSE
-        else:
-            superop = _kraus_superop_kernel(_kraus_stack(step.kraus_ops))
-            declared_dense = False
-        d = superop.shape[0]
-        columns = np.empty(d, dtype=np.int64)
-        values = np.empty(d, dtype=np.complex128)
-        if declared_dense:
-            code = _DENSE  # declared dense: nothing to extract, no scan
-        else:
-            code = int(_classify_matrix(superop, columns, values))
-        sparse = _superop_csr(superop) if code == _DENSE else None
-        resolved = (superop, code, columns, values, sparse)
-        self._superop_cache[id(step)] = (step, resolved)
-        return resolved
 
     def _apply_superop(self, step: ApplyMatrixStep | ApplyChannelStep) -> None:
         """One resolved super-operator pass over ``vec(rho)``, in place.
