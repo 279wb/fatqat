@@ -104,7 +104,6 @@ from .._execution_contract import (
 from ..._backends.steps import (
     ApplyChannelStep,
     ApplyMatrixStep,
-    BuiltinKernelKey,
     LossStep,
     MeasurementStep,
     PutStep,
@@ -153,6 +152,8 @@ from .numba.kernels._operator import (
     _apply_sparse_columns,
 )
 from .numba.kernels._preparation import (
+    _KERNEL_SPECS,
+    _MatrixStructureCache,
     _MAX_THREADS,
     _MIN_SIZE_TO_THREAD_DM,
     _compute_apply_plan,
@@ -208,71 +209,6 @@ def _kernel_thread_workers(policy: ExecutionPolicy) -> int:
 # Set by `_pack_operator_plan` for a step whose super-operator resolved to a
 # CSR (`_superop_csr`); `_classify_matrix` never returns it.
 _SPARSE = 3
-
-
-# Declared structure per canonical gate identity: the key-to-kernel table.
-# Which gates share a kernel is decided HERE, per engine - never in the key.
-#
-# How kernel selection flows (one classifier, one kernel family):
-#   standard path   apply(step) -> _resolve_structure(step): a key declared
-#                   _DENSE skips the scan entirely; everything else takes ONE
-#                   `_classify_matrix` scan at plan preparation, cached per
-#                   step - never per application, never per shot.
-#   fallback path   _apply_local(state, matrix, targets): matrix-only callers
-#                   (reset shifts, noise Kraus branches) - the same single
-#                   `_classify_matrix` scan, then the same resolved kernels.
-#   compiled path   _compile_dynamic_plan bakes each gate's resolved code into
-#                   the plan arrays, so the shots kernel never classifies.
-#
-# An entry may claim _DIAGONAL or _PERMUTATION only if that structure holds
-# for EVERY parameter value of the gate (RZ is diagonal for all theta); a
-# parametric gate whose structure varies claims _DENSE, which is always safe
-# (RX at theta=pi happens to be a permutation, but _DENSE stays correct).
-# The spec-vs-content test in test_kernel_dispatch.py enforces agreement
-# with `_classify_matrix` over the whole default map.
-_K = BuiltinKernelKey
-_KERNEL_SPECS: dict[BuiltinKernelKey, int] = {
-    # diagonal for every parameter value
-    _K.I: _DIAGONAL,
-    _K.Z: _DIAGONAL,
-    _K.S: _DIAGONAL,
-    _K.SDG: _DIAGONAL,
-    _K.T: _DIAGONAL,
-    _K.TDG: _DIAGONAL,
-    _K.CZ: _DIAGONAL,
-    _K.CS: _DIAGONAL,
-    _K.RZ: _DIAGONAL,
-    _K.PHASE: _DIAGONAL,
-    _K.U1: _DIAGONAL,
-    _K.CPHASE: _DIAGONAL,
-    _K.CLOCK: _DIAGONAL,
-    _K.CCLOCK: _DIAGONAL,
-    _K.SUBSPACE_RZ: _DIAGONAL,
-    # exactly one nonzero per row, for every parameter value
-    _K.X: _PERMUTATION,
-    _K.Y: _PERMUTATION,
-    _K.CX: _PERMUTATION,
-    _K.CY: _PERMUTATION,
-    _K.SWAP: _PERMUTATION,
-    _K.ISWAP: _PERMUTATION,
-    _K.CCX: _PERMUTATION,
-    _K.CSWAP: _PERMUTATION,
-    _K.SHIFT: _PERMUTATION,
-    _K.SUM: _PERMUTATION,
-    _K.SWAP_LEVELS: _PERMUTATION,
-    # generically dense
-    _K.H: _DENSE,
-    _K.SX: _DENSE,
-    _K.RX: _DENSE,
-    _K.RY: _DENSE,
-    _K.U: _DENSE,
-    _K.U2: _DENSE,
-    _K.U3: _DENSE,
-    _K.FOURIER: _DENSE,
-    _K.FOURIERDG: _DENSE,
-    _K.SUBSPACE_RX: _DENSE,
-    _K.SUBSPACE_RY: _DENSE,
-}
 
 
 # --- compiled whole-plan operator kernels (one parallel region) ---
@@ -865,23 +801,13 @@ class NumbaSVEngine(NumpySVEngine):
         # The layout depends only on targets and the fixed system dims, so it is
         # reused across gates and shots; `initialize` clears it when dims change.
         self._apply_plans: dict[tuple[int, ...], tuple] = {}
-        # Per-step resolved structure (code/columns/values), keyed by id(step)
-        # with the step pinned in the value so a recycled id can never alias.
-        # Structure is a property of the step's frozen matrix alone - not of
-        # system dims - so `initialize` deliberately does not clear it; the
-        # per-shot dynamic loop re-initializes per trajectory and must keep
-        # its once-per-plan resolutions.
-        # Materializing the next plan prunes steps it no longer uses.
-        self._structure_cache: dict[int, tuple] = {}
+        self._matrix_structures = _MatrixStructureCache()
+        # Bind once: all consumers resolve through the numerical owner directly.
+        self._resolve_structure = self._matrix_structures.resolve
 
     def _retain_step_caches(self, plan: tuple[ResolvedStep, ...]) -> None:
         super()._retain_step_caches(plan)
-        active_ids = {id(step) for step in plan}
-        self._structure_cache = {
-            step_id: entry
-            for step_id, entry in self._structure_cache.items()
-            if step_id in active_ids
-        }
+        self._matrix_structures.retain(plan)
 
     def configure_system(self, system_dims: Sequence[int], n_clbits: int = 0) -> None:
         dims_changed = tuple(int(dim) for dim in system_dims) != self._dims
@@ -971,35 +897,6 @@ class NumbaSVEngine(NumpySVEngine):
         return super().execute_shot_batch(
             context, payload, seed_batch, policy, initial_state=initial_state
         )
-
-    def _resolve_structure(
-        self, step: ApplyMatrixStep
-    ) -> tuple[int, np.ndarray, np.ndarray]:
-        """Resolve a step's kernel structure once: the standard-path front end.
-
-        `_classify_matrix` is the single classification rule. A kernel_key
-        declared ``_DENSE`` skips the scan entirely (dense handles any matrix
-        and its columns/values are never read); every other step - declared
-        diagonal/permutation or un-keyed - takes one scan here, at plan
-        preparation, cached per step (id-keyed, identity-pinned) instead of
-        once per application. For declared codes the scan reproduces the
-        declaration (guaranteed for every parameter value by the
-        spec-vs-content test); content is always the executable truth.
-        """
-        cached = self._structure_cache.get(id(step))
-        if cached is not None and cached[0] is step:
-            return cached[1]
-        matrix = np.ascontiguousarray(step.matrix, dtype=np.complex128)
-        d = matrix.shape[0]
-        columns = np.empty(d, dtype=np.int64)
-        values = np.empty(d, dtype=np.complex128)
-        if _KERNEL_SPECS.get(step.kernel_key) == _DENSE:
-            code = _DENSE  # declared dense: nothing to extract, no scan
-        else:
-            code = int(_classify_matrix(matrix, columns, values))
-        resolved = (code, columns, values)
-        self._structure_cache[id(step)] = (step, resolved)
-        return resolved
 
     def apply(self, step: ApplyMatrixStep) -> None:
         """Apply one plan step - the standard path (key-aware, cached)."""

@@ -1,8 +1,9 @@
-"""Host-side numerical layout and sparse-matrix preparation for Numba.
+"""Host-side numerical operand preparation and matrix caches for Numba.
 
 Statevectors use physical subsystem dimensions; density matrices reuse the same
 layouts over doubled bra/ket dimensions. These helpers prepare numerical operands
-and kernel chunk counts without owning workflow sequencing or engine caches.
+and kernel chunk counts without owning workflow sequencing. Matrix resolutions
+are retained across trajectories and pruned when the effective plan changes.
 """
 
 from __future__ import annotations
@@ -12,6 +13,125 @@ from math import prod
 
 import numpy as np
 from numba import config as numba_config
+
+from ....._backends.steps import ApplyMatrixStep, BuiltinKernelKey, ResolvedStep
+from ._apply import _DENSE, _DIAGONAL, _PERMUTATION, _classify_matrix
+
+# Declared structure per canonical gate identity: the key-to-kernel table.
+# The numerical runtime owns these declarations; the key carries only identity.
+#
+# How kernel selection flows (one classifier, one kernel family):
+#   standard path   apply(step) -> _MatrixStructureCache.resolve(step): a key declared
+#                   _DENSE skips the scan entirely; everything else takes ONE
+#                   `_classify_matrix` scan at plan preparation, cached per
+#                   step - never per application, never per shot.
+#   fallback path   _apply_local(state, matrix, targets): matrix-only callers
+#                   (noise Kraus branches) - the same single
+#                   `_classify_matrix` scan, then the same resolved kernels.
+#   compiled path   _compile_dynamic_plan bakes each gate's resolved code into
+#                   the plan arrays, so the shots kernel never classifies.
+#
+# An entry may claim _DIAGONAL or _PERMUTATION only if that structure holds
+# for EVERY parameter value of the gate (RZ is diagonal for all theta); a
+# parametric gate whose structure varies claims _DENSE, which is always safe
+# (RX at theta=pi happens to be a permutation, but _DENSE stays correct).
+# The spec-vs-content test in test_kernel_dispatch.py enforces agreement
+# with `_classify_matrix` over the whole default map.
+_K = BuiltinKernelKey
+_KERNEL_SPECS: dict[BuiltinKernelKey, int] = {
+    # diagonal for every parameter value
+    _K.I: _DIAGONAL,
+    _K.Z: _DIAGONAL,
+    _K.S: _DIAGONAL,
+    _K.SDG: _DIAGONAL,
+    _K.T: _DIAGONAL,
+    _K.TDG: _DIAGONAL,
+    _K.CZ: _DIAGONAL,
+    _K.CS: _DIAGONAL,
+    _K.RZ: _DIAGONAL,
+    _K.PHASE: _DIAGONAL,
+    _K.U1: _DIAGONAL,
+    _K.CPHASE: _DIAGONAL,
+    _K.CLOCK: _DIAGONAL,
+    _K.CCLOCK: _DIAGONAL,
+    _K.SUBSPACE_RZ: _DIAGONAL,
+    # exactly one nonzero per row, for every parameter value
+    _K.X: _PERMUTATION,
+    _K.Y: _PERMUTATION,
+    _K.CX: _PERMUTATION,
+    _K.CY: _PERMUTATION,
+    _K.SWAP: _PERMUTATION,
+    _K.ISWAP: _PERMUTATION,
+    _K.CCX: _PERMUTATION,
+    _K.CSWAP: _PERMUTATION,
+    _K.SHIFT: _PERMUTATION,
+    _K.SUM: _PERMUTATION,
+    _K.SWAP_LEVELS: _PERMUTATION,
+    # generically dense
+    _K.H: _DENSE,
+    _K.SX: _DENSE,
+    _K.RX: _DENSE,
+    _K.RY: _DENSE,
+    _K.U: _DENSE,
+    _K.U2: _DENSE,
+    _K.U3: _DENSE,
+    _K.FOURIER: _DENSE,
+    _K.FOURIERDG: _DENSE,
+    _K.SUBSPACE_RX: _DENSE,
+    _K.SUBSPACE_RY: _DENSE,
+}
+
+
+class _MatrixStructureCache:
+    """Resolve frozen gate matrices independently of workflow packing.
+
+    Per-step resolutions (code/columns/values) are keyed by ``id(step)`` and
+    pin the source step so a recycled identity can never alias another entry.
+    Structure depends only on the step's frozen matrix, not system dimensions.
+    Trajectory initialization deliberately keeps these entries: the dynamic
+    workflow initializes each shot and must reuse its once-per-plan resolutions.
+    Materializing the next plan prunes steps it no longer uses through ``retain``.
+    """
+
+    def __init__(self):
+        self._entries: dict[int, tuple] = {}
+
+    def retain(self, plan: tuple[ResolvedStep, ...]) -> None:
+        """Keep only resolutions used by the next effective plan."""
+        active_ids = {id(step) for step in plan}
+        self._entries = {
+            step_id: entry
+            for step_id, entry in self._entries.items()
+            if step_id in active_ids
+        }
+
+    def resolve(self, step: ApplyMatrixStep) -> tuple[int, np.ndarray, np.ndarray]:
+        """Resolve a step's kernel structure once: the standard-path front end.
+
+        `_classify_matrix` is the single classification rule. A kernel_key
+        declared ``_DENSE`` skips the scan entirely (dense handles any matrix
+        and its columns/values are never read); every other step - declared
+        diagonal/permutation or un-keyed - takes one scan here, at plan
+        preparation, cached per step (id-keyed, identity-pinned) instead of
+        once per application. For declared codes the scan reproduces the
+        declaration (guaranteed for every parameter value by the
+        spec-vs-content test); content is always the executable truth.
+        """
+        cached = self._entries.get(id(step))
+        if cached is not None and cached[0] is step:
+            return cached[1]
+        matrix = np.ascontiguousarray(step.matrix, dtype=np.complex128)
+        d = matrix.shape[0]
+        columns = np.empty(d, dtype=np.int64)
+        values = np.empty(d, dtype=np.complex128)
+        if _KERNEL_SPECS.get(step.kernel_key) == _DENSE:
+            code = _DENSE  # declared dense: nothing to extract, no scan
+        else:
+            code = int(_classify_matrix(matrix, columns, values))
+        resolved = (code, columns, values)
+        self._entries[id(step)] = (step, resolved)
+        return resolved
+
 
 # Numba fixes the launch pool's capacity at import time. ``set_num_threads``
 # changes only the active mask, so policy ceilings clamp to this configured

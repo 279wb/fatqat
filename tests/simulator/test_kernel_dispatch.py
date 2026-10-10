@@ -1,5 +1,8 @@
 """Key-driven numba kernel dispatch: spec/content agreement and parity."""
 
+import gc
+import weakref
+
 import numpy as np
 import pytest
 
@@ -20,11 +23,13 @@ numba = pytest.importorskip("numba")
 from fatqat.simulator._engine.nb import (
     _DENSE,
     _fuse_gate_channels,
-    _KERNEL_SPECS,
     NumbaSVEngine,
 )
 from fatqat.simulator._engine.numba.kernels._apply import _classify_matrix
-from fatqat.simulator._engine.numba.kernels._preparation import _superop_csr
+from fatqat.simulator._engine.numba.kernels._preparation import (
+    _KERNEL_SPECS,
+    _superop_csr,
+)
 from fatqat.simulator._engine.numpy.engine import NumpySVEngine
 from fatqat.noise import Depolarizing
 from fatqat.noise.catalog import depolarizing_rule
@@ -250,7 +255,10 @@ def test_structure_cache_pins_steps_and_reuses_resolutions():
     # Trajectory initialization resets state without discarding this plan's work.
     simulator.initialize((2,), 0)
     assert simulator._resolve_structure(step) is first  # cached, not re-resolved
-    assert simulator._structure_cache[id(step)][0] is step  # pinned identity
+    step_ref = weakref.ref(step)
+    del step
+    gc.collect()
+    assert step_ref() is not None  # resolution pins its source step
 
 
 def _reconstruct(csr, d):
