@@ -85,7 +85,6 @@ from ...._backends.steps import (
     PutStep,
     ResolvedStep,
 )
-from ....implementation.matrices import shift_matrix
 from ....result import _decode_engine_indices_to_clbit_rows, reduce_to_counts
 from .._execution_policy import (
     _ExecutionPolicy as ExecutionPolicy,
@@ -109,6 +108,7 @@ from .kernels import (
     _digit,
     _project_density_matrix,
     _reset_density_matrix,
+    _reset_statevector,
     _project_statevector,
     _statevector_probabilities,
     _sample_unitary,
@@ -711,11 +711,9 @@ class NumpySVEngine(_NumpyMatrixEngine):
         """
         assert len(indices) >= 1, "reset_subsystems requires at least one index"
         idx = self.collapse(indices, rng)
-        for index in indices:
-            outcome = _digit(idx, index, self._dims)
-            if outcome != 0:
-                inv = shift_matrix(self._dims[index], -outcome)
-                self._state = self._apply_local(self._state, inv, (index,))
+        self._state = _reset_statevector(
+            self._state, idx, indices, self._dims, self._apply_local
+        )
 
 
 # --- density-matrix engine ---

@@ -8,6 +8,7 @@ from math import prod
 import numpy as np
 
 from ...._backends.steps import ApplyChannelStep, ResolvedStep
+from ....implementation.matrices import shift_matrix
 from ....noise.base import _sampled_unitary_branches
 
 # What `_sampled_unitary_branches` resolves a channel step to: branch
@@ -370,3 +371,23 @@ def _sample_unitary(
     if identities[chosen]:
         return None
     return unitaries[chosen]
+
+
+def _reset_statevector(
+    state: np.ndarray,
+    outcome_index: int,
+    indices: Sequence[int],
+    dims: Sequence[int],
+    apply_local: Callable[[np.ndarray, np.ndarray, Sequence[int]], np.ndarray],
+) -> np.ndarray:
+    """Shift measured nonzero digits to zero after one grouped collapse.
+
+    The caller supplies the collapsed state and sampled flat index. This
+    numerical step consumes no randomness and preserves target order.
+    """
+    for index in indices:
+        outcome = _digit(outcome_index, index, dims)
+        if outcome != 0:
+            inv = shift_matrix(dims[index], -outcome)
+            state = apply_local(state, inv, (index,))
+    return state
