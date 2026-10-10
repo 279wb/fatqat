@@ -182,3 +182,43 @@ def _reset_density_matrix(
     post = post.reshape(local_dims + local_dims + rest_shape)
     inverse_perm = np.argsort(moved + remaining)
     return np.transpose(post, inverse_perm).reshape(rho.shape)
+
+
+def _apply_unitary(
+    state: np.ndarray,
+    matrix: np.ndarray,
+    targets: Sequence[int],
+    dims: Sequence[int],
+    reversed_dims: tuple[int, ...],
+) -> np.ndarray:
+    """Apply a local matrix to every unitary column."""
+    n = len(dims)
+    k = len(targets)
+    local_dims = tuple(dims[t] for t in targets)
+    columns = state.shape[1]
+    tensor = state.reshape(reversed_dims + (columns,))
+    m = np.asarray(matrix, dtype=complex).reshape(local_dims + local_dims)
+    target_axes = [n - 1 - q for q in targets]
+    return _contract_local(m, tensor, target_axes, n + 1, k).reshape(state.shape)
+
+
+def _apply_superoperator(
+    rho: np.ndarray,
+    matrix: np.ndarray,
+    targets: Sequence[int],
+    dims: Sequence[int],
+    reversed_dims: tuple[int, ...],
+) -> np.ndarray:
+    """Apply a local matrix sandwich to every superoperator column."""
+    n = len(dims)
+    k = len(targets)
+    local_dims = tuple(dims[t] for t in targets)
+    columns = rho.shape[1]
+    tensor = rho.reshape(reversed_dims * 2 + (columns,))
+    m = np.asarray(matrix, dtype=complex).reshape(local_dims + local_dims)
+    total = 2 * n + 1
+    ket_axes = [n - 1 - q for q in targets]
+    bra_axes = [2 * n - 1 - q for q in targets]
+    tensor = _contract_local(m, tensor, ket_axes, total, k)
+    tensor = _contract_local(m.conj(), tensor, bra_axes, total, k)
+    return tensor.reshape(rho.shape)

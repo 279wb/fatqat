@@ -96,7 +96,8 @@ from ..base import MatrixEngine, _shot_seed_sequences
 from .kernels import (
     _apply_density_matrix,
     _apply_statevector,
-    _contract_local,
+    _apply_superoperator,
+    _apply_unitary,
     _density_matrix_probabilities,
     _digit,
     _project_density_matrix,
@@ -970,14 +971,7 @@ class NumpyUnitaryEngine(  # pylint: disable=abstract-method
         self, state: np.ndarray, matrix: np.ndarray, targets: Sequence[int]
     ) -> np.ndarray:
         """Apply a local matrix to every column of the operator at once."""
-        n = len(self._dims)
-        k = len(targets)
-        local_dims = tuple(self._dims[t] for t in targets)
-        columns = state.shape[1]
-        tensor = state.reshape(self._reversed_dims + (columns,))
-        m = np.asarray(matrix, dtype=complex).reshape(local_dims + local_dims)
-        target_axes = [n - 1 - q for q in targets]
-        return _contract_local(m, tensor, target_axes, n + 1, k).reshape(state.shape)
+        return _apply_unitary(state, matrix, targets, self._dims, self._reversed_dims)
 
 
 # As for NumpyUnitaryEngine, the inherited sampling methods are unsupported,
@@ -1027,18 +1021,9 @@ class NumpySuperopEngine(  # pylint: disable=abstract-method
         self, rho: np.ndarray, matrix: np.ndarray, targets: Sequence[int]
     ) -> np.ndarray:
         """Return ``M_T . M_T^dagger`` applied to every column at once."""
-        n = len(self._dims)
-        k = len(targets)
-        local_dims = tuple(self._dims[t] for t in targets)
-        columns = rho.shape[1]
-        tensor = rho.reshape(self._reversed_dims * 2 + (columns,))
-        m = np.asarray(matrix, dtype=complex).reshape(local_dims + local_dims)
-        total = 2 * n + 1
-        ket_axes = [n - 1 - q for q in targets]
-        bra_axes = [2 * n - 1 - q for q in targets]
-        tensor = _contract_local(m, tensor, ket_axes, total, k)
-        tensor = _contract_local(m.conj(), tensor, bra_axes, total, k)
-        return tensor.reshape(rho.shape)
+        return _apply_superoperator(
+            rho, matrix, targets, self._dims, self._reversed_dims
+        )
 
     def reset_subsystems(
         self, indices: Sequence[int], rng: np.random.Generator | None = None
