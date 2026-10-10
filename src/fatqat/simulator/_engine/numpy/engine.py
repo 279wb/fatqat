@@ -94,6 +94,10 @@ from .._execution_policy import (
 )
 from ..base import MatrixEngine, _shot_seed_sequences
 from .kernels import (
+    _allocate_statevector,
+    _allocate_density_matrix,
+    _allocate_unitary,
+    _allocate_superoperator,
     _apply_density_matrix,
     _apply_statevector,
     _apply_superoperator,
@@ -651,14 +655,7 @@ class NumpySVEngine(_NumpyMatrixEngine):
             if step_id in active_ids
         }
 
-    def _allocate(self, size: int, initial_state: np.ndarray | None) -> np.ndarray:
-        if initial_state is not None:
-            # Copy: each shot evolves its own buffer, and the caller's array
-            # must survive the run unchanged.
-            return np.array(initial_state, dtype=complex).reshape(size)
-        state = np.zeros(size, dtype=complex)
-        state[0] = 1.0
-        return state
+    _allocate = staticmethod(_allocate_statevector)
 
     def apply(self, step: ApplyMatrixStep) -> None:
         self._state = self._apply_local(self.state, step.matrix, step.target_indices)
@@ -786,19 +783,7 @@ class NumpyDMEngine(_NumpyMatrixEngine):
     def __init__(self, name: str = "numpy-dm"):
         super().__init__(name)
 
-    def _allocate(self, size: int, initial_state: np.ndarray | None) -> np.ndarray:
-        given = initial_state
-        if given is not None:
-            given = np.asarray(given, dtype=complex)
-            # A ket is accepted as shorthand for the pure state it describes,
-            # so the same array can start a statevector and a density-matrix
-            # run without the caller forming the outer product twice.
-            if given.ndim == 1:
-                return np.outer(given, given.conj())
-            return np.array(given, dtype=complex)
-        state = np.zeros((size, size), dtype=complex)
-        state[0, 0] = 1.0
-        return state
+    _allocate = staticmethod(_allocate_density_matrix)
 
     def apply(self, step: ApplyMatrixStep) -> None:
         """Apply ``rho' = U_T rho U_T^dagger`` without materializing ``U_T``."""
@@ -963,9 +948,7 @@ class NumpyUnitaryEngine(  # pylint: disable=abstract-method
     def __init__(self, name: str = "numpy-unitary"):
         super().__init__(name)
 
-    def _allocate(self, size: int, initial_state: np.ndarray | None) -> np.ndarray:
-        assert initial_state is None, "operator execution has no initial state"
-        return np.eye(size, dtype=complex)
+    _allocate = staticmethod(_allocate_unitary)
 
     def _apply_local(
         self, state: np.ndarray, matrix: np.ndarray, targets: Sequence[int]
@@ -1002,9 +985,7 @@ class NumpySuperopEngine(  # pylint: disable=abstract-method
         # Keyed by (subsystem, dimension), so an entry can never go stale.
         self._reset_channels: dict[tuple[int, int], ApplyChannelStep] = {}
 
-    def _allocate(self, size: int, initial_state: np.ndarray | None) -> np.ndarray:
-        assert initial_state is None, "operator execution has no initial state"
-        return np.eye(size * size, dtype=complex)
+    _allocate = staticmethod(_allocate_superoperator)
 
     def _export_state_data(self, data: np.ndarray) -> np.ndarray:
         """Convert NumPy super-operator data to public column stacking.
