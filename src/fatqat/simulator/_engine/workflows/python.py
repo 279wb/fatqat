@@ -27,7 +27,6 @@ from ..._execution_contract import (
     _InitialEvolutionState as InitialEvolutionState,
     _ExecutionContext as ExecutionContext,
 )
-from ..base import _shot_seed_sequences
 from ._reporting import (
     ERASURE_DIGIT,
     _apply_measurement_reporting,
@@ -119,7 +118,7 @@ def _run_per_shot(
     n_iters = context.shots if request.counts else (1 if state_requested else 0)
     snapshots = engine._run_shot_batch(
         plan,
-        _shot_seed_sequences(context.seed, n_iters),
+        np.random.SeedSequence(context.seed).spawn(n_iters),
         initial_state,
     )
 

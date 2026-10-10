@@ -25,13 +25,6 @@ from ._execution_policy import (
 from .state import EvolutionState, QuantumDataT, QuantumState
 
 
-def _shot_seed_sequences(
-    seed: int | None, n_iters: int
-) -> list[np.random.SeedSequence]:
-    """Spawn stable, ordered child streams for sampled shots."""
-    return np.random.SeedSequence(seed).spawn(n_iters)
-
-
 class MatrixEngine(ABC, Generic[QuantumDataT]):
     """
     Abstract base class and interface contract for all engines.

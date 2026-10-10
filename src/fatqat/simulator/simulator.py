@@ -56,7 +56,7 @@ from ..result import (
     _ResultConfig,
     counts_dict_from_arrays,
 )
-from ._engine.base import MatrixEngine, _shot_seed_sequences
+from ._engine.base import MatrixEngine
 from .._backends.backend_utils import (
     _LoweringContext,
     _canonicalize_method,
@@ -1166,9 +1166,8 @@ class Simulator:
             else None
         )
         statistics = []
-        child_seeds = _shot_seed_sequences(
-            prepared.execution.simulation.seed,
-            len(prepared.samples),
+        child_seeds = np.random.SeedSequence(prepared.execution.simulation.seed).spawn(
+            len(prepared.samples)
         )
         for child_seed, sample in zip(child_seeds, prepared.samples, strict=True):
             execution = sample.execution

@@ -16,7 +16,6 @@ from ._execution_policy import (
     _ExecutionPolicy as ExecutionPolicy,
     _process_child_policy,
 )
-from .base import _shot_seed_sequences
 
 if TYPE_CHECKING:
     from typing import Protocol
@@ -95,7 +94,8 @@ def _run_shots_in_processes(
     """Run shot batches in real child processes under a serial child policy."""
     assert policy.shot_strategy == "processes"
     assert policy.worker_limit is not None, "process policy requires a worker ceiling"
-    seeds = _shot_seed_sequences(context.seed, context.shots)
+    # Assign streams before batching so worker count cannot change shot seeds.
+    seeds = np.random.SeedSequence(context.seed).spawn(context.shots)
     batches = _split_into_batches(seeds, policy.worker_limit)
     child = _process_child_policy(policy)
     # Keep Loky's process-global reusable pool at the stable resolved ceiling;

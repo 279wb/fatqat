@@ -117,7 +117,6 @@ from ....noise.nb import (
 )
 from ....result import reduce_to_counts
 from .._execution_policy import _ExecutionPolicy as ExecutionPolicy
-from ..base import _shot_seed_sequences
 from .._numba_scope import _kernel_thread_workers, _thread_scope
 from ..numerics.numba._apply import (
     _DENSE,
@@ -944,7 +943,9 @@ class NumbaSVEngine(NumpySVEngine):
         plan_arrays, max_draws = compiled
         shots = context.shots
         uniforms = np.empty(shots * max_draws, dtype=np.float64)
-        for s, seed_sequence in enumerate(_shot_seed_sequences(context.seed, shots)):
+        for s, seed_sequence in enumerate(
+            np.random.SeedSequence(context.seed).spawn(shots)
+        ):
             uniforms[s * max_draws : (s + 1) * max_draws] = np.random.default_rng(
                 seed_sequence
             ).random(max_draws)
