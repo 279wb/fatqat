@@ -7,6 +7,44 @@ from math import prod
 
 import numpy as np
 
+from ...._backends.steps import ApplyChannelStep, ResolvedStep
+from ....noise.base import _sampled_unitary_branches
+
+# What `_sampled_unitary_branches` resolves a channel step to: branch
+# probabilities, unit-norm operators, identity flags - or None for a channel
+# that must be weighed against the state.
+_Branches = tuple[np.ndarray, tuple[np.ndarray, ...], tuple[bool, ...]] | None
+
+
+class _ChannelRouteCache:
+    """Prepare state-independent channel branches across shot initialization.
+
+    Entries pin their source steps to prevent recycled identities from aliasing.
+    Routes depend only on frozen Kraus operators, not dimensions or live state.
+    Materializing a new plan retains shared steps and releases replaced ones.
+    """
+
+    def __init__(self):
+        self._entries: dict[int, tuple[ApplyChannelStep, _Branches]] = {}
+
+    def retain(self, plan: tuple[ResolvedStep, ...]) -> None:
+        """Keep only resolutions used by the next effective plan."""
+        active_ids = {id(step) for step in plan}
+        self._entries = {
+            step_id: entry
+            for step_id, entry in self._entries.items()
+            if step_id in active_ids
+        }
+
+    def resolve(self, step: ApplyChannelStep) -> _Branches:
+        """Resolve a channel step's branch-weighing route once, then cache it."""
+        cached = self._entries.get(id(step))
+        if cached is not None and cached[0] is step:
+            return cached[1]
+        branches = _sampled_unitary_branches(step.kraus_ops)
+        self._entries[id(step)] = (step, branches)
+        return branches
+
 
 def _allocate_statevector(size: int, initial_state: np.ndarray | None) -> np.ndarray:
     """Return an owned ket, copied from input or in the computational zero state."""

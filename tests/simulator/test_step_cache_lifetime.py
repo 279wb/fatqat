@@ -66,8 +66,13 @@ def test_replaced_plan_releases_steps_and_arrays(
     if noisy:
         noise.add(fq.noise.Depolarizing(p=0.2), operation=ops.RY)
     backend = Simulator(method, runtime=runtime, noise=noise)
+    resolver_owner = (
+        backend._engine._channel_routes
+        if method == "statevector" and noisy
+        else backend._engine
+    )
     resolver = (
-        "_channel_route"
+        "resolve"
         if method == "statevector" and noisy
         else (
             "_resolve_structure"
@@ -75,7 +80,7 @@ def test_replaced_plan_releases_steps_and_arrays(
             else "_resolve_superop"
         )
     )
-    observed = _observe_resolutions(monkeypatch, backend._engine, resolver)
+    observed = _observe_resolutions(monkeypatch, resolver_owner, resolver)
     config = {"seed": 7, "shot_parallelism": "serial", "kernel_parallelism": "serial"}
     options = {"shots": 1, "result_config": {"counts": False, "final_state": True}}
     previous = []

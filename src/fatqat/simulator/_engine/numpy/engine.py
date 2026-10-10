@@ -86,7 +86,6 @@ from ...._backends.steps import (
     ResolvedStep,
 )
 from ....implementation.matrices import shift_matrix
-from ....noise.base import _sampled_unitary_branches
 from ....result import _decode_engine_indices_to_clbit_rows, reduce_to_counts
 from .._execution_policy import (
     _ExecutionPolicy as ExecutionPolicy,
@@ -94,6 +93,7 @@ from .._execution_policy import (
 )
 from ..base import MatrixEngine, _shot_seed_sequences
 from .kernels import (
+    _ChannelRouteCache,
     _allocate_statevector,
     _allocate_density_matrix,
     _allocate_unitary,
@@ -111,11 +111,6 @@ from .kernels import (
 )
 from ..parallel import _run_shots_in_processes
 from ..state import ClassicalState, EvolutionState, QuantumState
-
-# What `_sampled_unitary_branches` resolves a channel step to: branch
-# probabilities, unit-norm operators, identity flags - or None for a channel
-# that must be weighed against the state.
-_Branches = tuple[np.ndarray, tuple[np.ndarray, ...], tuple[bool, ...]] | None
 
 ERASURE_DIGIT = 2
 
@@ -639,21 +634,10 @@ class NumpySVEngine(_NumpyMatrixEngine):
 
     def __init__(self, name: str = "numpy-sv"):
         super().__init__(name)
-        # Per-step channel route, keyed by id(step) with the step pinned in the
-        # value so a recycled id can never alias. Depends on the step's frozen
-        # Kraus operators alone, not on system dims, so `initialize` must not
-        # clear it - the per-shot loop re-initializes once per trajectory.
-        # Materializing the next plan prunes steps it no longer uses.
-        self._channel_routes: dict[int, tuple[ApplyChannelStep, _Branches]] = {}
+        self._channel_routes = _ChannelRouteCache()
 
     def _retain_step_caches(self, plan: tuple[ResolvedStep, ...]) -> None:
-        # Keep shared sweep steps; release steps replaced by this plan.
-        active_ids = {id(step) for step in plan}
-        self._channel_routes = {
-            step_id: entry
-            for step_id, entry in self._channel_routes.items()
-            if step_id in active_ids
-        }
+        self._channel_routes.retain(plan)
 
     _allocate = staticmethod(_allocate_statevector)
 
@@ -667,20 +651,11 @@ class NumpySVEngine(_NumpyMatrixEngine):
         draws from a fixed probability vector; everything else takes the
         general quantum-jump path. Both consume exactly one rng draw.
         """
-        branches = self._channel_route(step)
+        branches = self._channel_routes.resolve(step)
         if branches is None:
             self._apply_kraus_jump(step, rng)
         else:
             self._apply_sampled_unitary(branches, step.target_indices, rng)
-
-    def _channel_route(self, step: ApplyChannelStep) -> _Branches:
-        """Resolve a channel step's branch-weighing route once, then cache it."""
-        cached = self._channel_routes.get(id(step))
-        if cached is not None and cached[0] is step:
-            return cached[1]
-        branches = _sampled_unitary_branches(step.kraus_ops)
-        self._channel_routes[id(step)] = (step, branches)
-        return branches
 
     def _apply_sampled_unitary(
         self,
