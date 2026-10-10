@@ -46,6 +46,27 @@ class _ChannelRouteCache:
         return branches
 
 
+# This cache has one operation: resolve an immutable reset channel on demand.
+class _ResetChannelCache:  # pylint: disable=too-few-public-methods
+    """Reuse reset channels by subsystem and dimension across executions."""
+
+    def __init__(self):
+        self._entries: dict[tuple[int, int], ApplyChannelStep] = {}
+
+    def resolve(self, index: int, dim: int) -> ApplyChannelStep:
+        """Return the single-subsystem reset channel, building it once."""
+        step = self._entries.get((index, dim))
+        if step is None:
+            kraus = []
+            for outcome in range(dim):
+                operator = np.zeros((dim, dim), dtype=complex)
+                operator[0, outcome] = 1.0
+                kraus.append(operator)
+            step = ApplyChannelStep(kraus_ops=tuple(kraus), target_indices=(index,))
+            self._entries[(index, dim)] = step
+        return step
+
+
 def _allocate_statevector(size: int, initial_state: np.ndarray | None) -> np.ndarray:
     """Return an owned ket, copied from input or in the computational zero state."""
     if initial_state is not None:

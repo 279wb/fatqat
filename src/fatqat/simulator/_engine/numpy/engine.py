@@ -94,6 +94,7 @@ from .._execution_policy import (
 from ..base import MatrixEngine, _shot_seed_sequences
 from .kernels import (
     _ChannelRouteCache,
+    _ResetChannelCache,
     _allocate_statevector,
     _allocate_density_matrix,
     _allocate_unitary,
@@ -957,8 +958,7 @@ class NumpySuperopEngine(  # pylint: disable=abstract-method
 
     def __init__(self, name: str = "numpy-superop"):
         super().__init__(name)
-        # Keyed by (subsystem, dimension), so an entry can never go stale.
-        self._reset_channels: dict[tuple[int, int], ApplyChannelStep] = {}
+        self._reset_channels = _ResetChannelCache()
 
     _allocate = staticmethod(_allocate_superoperator)
 
@@ -991,18 +991,6 @@ class NumpySuperopEngine(  # pylint: disable=abstract-method
         """
         assert len(indices) >= 1, "reset_subsystems requires at least one index"
         for index in indices:
-            self.apply_channel(self._reset_channel(index), rng)
-
-    def _reset_channel(self, index: int) -> ApplyChannelStep:
-        """The single-subsystem reset channel for ``index``, built once."""
-        dim = self._dims[index]
-        step = self._reset_channels.get((index, dim))
-        if step is None:
-            kraus = []
-            for outcome in range(dim):
-                operator = np.zeros((dim, dim), dtype=complex)
-                operator[0, outcome] = 1.0
-                kraus.append(operator)
-            step = ApplyChannelStep(kraus_ops=tuple(kraus), target_indices=(index,))
-            self._reset_channels[(index, dim)] = step
-        return step
+            self.apply_channel(
+                self._reset_channels.resolve(index, self._dims[index]), rng
+            )

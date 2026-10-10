@@ -3032,7 +3032,7 @@ class NumbaSuperopEngine(  # pylint: disable=too-many-ancestors
     def _retain_step_caches(self, plan: tuple[ResolvedStep, ...]) -> None:
         # Reset payloads resolve synthesized channels, not the ResetSteps themselves.
         reset_steps = tuple(
-            self._reset_channel(index)
+            self._reset_channels.resolve(index, self._dims[index])
             for step in plan
             if isinstance(step, ResetStep)
             for index in step.reset_indices
@@ -3048,7 +3048,10 @@ class NumbaSuperopEngine(  # pylint: disable=too-many-ancestors
         for step in plan:
             # A reset is the Kraus channel sum_k |0><k|.
             resolved_steps = (
-                [self._reset_channel(index) for index in step.reset_indices]
+                [
+                    self._reset_channels.resolve(index, self._dims[index])
+                    for index in step.reset_indices
+                ]
                 if isinstance(step, ResetStep)
                 else [step]
             )
