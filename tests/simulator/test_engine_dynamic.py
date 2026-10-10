@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from fatqat.simulator._engine.numpy.engine import NumpySVEngine
+from fatqat.simulator._engine.engines.numpy import NumpySVEngine
 from fatqat._backends.steps import ApplyMatrixStep
 
 _X = np.array([[0, 1], [1, 0]], dtype=complex)
@@ -12,7 +12,7 @@ _H = np.array([[1, 1], [1, -1]], dtype=complex) / np.sqrt(2)
 def fixture_sv_engine_class(request):
     if request.param == "numba":
         pytest.importorskip("numba")
-        from fatqat.simulator._engine.nb import NumbaSVEngine
+        from fatqat.simulator._engine.engines.numba import NumbaSVEngine
 
         return NumbaSVEngine
     return NumpySVEngine

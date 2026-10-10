@@ -93,7 +93,7 @@ from math import prod
 import numpy as np
 from numba import get_num_threads, njit, prange, set_num_threads
 
-from .._execution_contract import (
+from ..._execution_contract import (
     RawResult,
     _InitialEvolutionState as InitialEvolutionState,
     _ExecutionContext as ExecutionContext,
@@ -101,7 +101,7 @@ from .._execution_contract import (
     _QuantumCapabilities,
     _TrajectoryCapabilities,
 )
-from ..._backends.steps import (
+from ...._backends.steps import (
     ApplyChannelStep,
     ApplyMatrixStep,
     LossStep,
@@ -110,16 +110,16 @@ from ..._backends.steps import (
     ResetStep,
     ResolvedStep,
 )
-from ...noise.nb import (
+from ....noise.nb import (
     _compile_channel_table,
     _compile_readout_table,
     _jump_branch_kernel,
     _report_digit_kernel,
 )
-from ...result import reduce_to_counts
-from ._execution_policy import _ExecutionPolicy as ExecutionPolicy
-from .base import _shot_seed_sequences
-from .numba.kernels._apply import (
+from ....result import reduce_to_counts
+from .._execution_policy import _ExecutionPolicy as ExecutionPolicy
+from ..base import _shot_seed_sequences
+from ..numerics.numba._apply import (
     _DENSE,
     _DIAGONAL,
     _PERMUTATION,
@@ -128,13 +128,13 @@ from .numba.kernels._apply import (
     _run_resolved,
     _run_resolved_sparse,
 )
-from .numba.kernels._channel import _apply_channel_step
-from .numba.kernels._fusion import (
+from ..numerics.numba._channel import _apply_channel_step
+from ..numerics.numba._fusion import (
     _MIN_SIZE_TO_FUSE,
     _fuse_gate_channels,
     _fuse_operator_payloads,
 )
-from .numba.kernels._measurement import (
+from ..numerics.numba._measurement import (
     _sample_index_kernel,
     _sample_indices_kernel,
     _sv_probabilities_kernel,
@@ -143,13 +143,13 @@ from .numba.kernels._measurement import (
     _dm_probabilities_kernel,
     _dm_project_kernel,
 )
-from .numba.kernels._operator import (
+from ..numerics.numba._operator import (
     _apply_dense_columns,
     _apply_diagonal_columns,
     _apply_permutation_columns,
     _apply_sparse_columns,
 )
-from .numba.kernels._preparation import (
+from ..numerics.numba._preparation import (
     _MatrixStructureCache,
     _SuperoperatorCache,
     _MAX_THREADS,
@@ -157,14 +157,14 @@ from .numba.kernels._preparation import (
     _compute_apply_plan,
     _measured_layout,
 )
-from .numpy.engine import (
+from .numpy import (
     _NumpyOperatorEngine,
     NumpyDMEngine,
     NumpySuperopEngine,
     NumpySVEngine,
     NumpyUnitaryEngine,
 )
-from .state import NumbaClassicalState, NumbaEvolutionState, NumbaQuantumState
+from ..state import NumbaClassicalState, NumbaEvolutionState, NumbaQuantumState
 
 
 @contextmanager

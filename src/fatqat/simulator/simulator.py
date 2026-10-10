@@ -290,7 +290,7 @@ class Simulator:
         self._request_cls = spec.request_cls
         if normalized_runtime == "numba":
             try:
-                from ._engine import nb as engine_module
+                from ._engine.engines import numba as engine_module
             except ImportError as exc:
                 raise BackendValidationError(
                     "runtime='numba' requires the numba dependency; reinstall "
@@ -298,7 +298,7 @@ class Simulator:
                 ) from exc
             engine_name = spec.numba_engine_name
         else:
-            from ._engine.numpy import engine as engine_module
+            from ._engine.engines import numpy as engine_module
 
             engine_name = spec.numpy_engine_name
         self._engine_cls: type[MatrixEngine] = getattr(engine_module, engine_name)

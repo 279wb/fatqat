@@ -381,7 +381,7 @@ def test_numpy_and_numba_runtimes_agree(method):
 
 def _numba_engines():
     pytest.importorskip("numba")
-    from fatqat.simulator._engine import nb
+    from fatqat.simulator._engine.engines import numba as nb
 
     return nb
 

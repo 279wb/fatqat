@@ -14,7 +14,7 @@ from fatqat._backends.steps import (
     PutStep,
     ResetStep,
 )
-from fatqat.simulator._engine.numpy.engine import NumpySVEngine, NumpyUnitaryEngine
+from fatqat.simulator._engine.engines.numpy import NumpySVEngine, NumpyUnitaryEngine
 from fatqat.errors import BackendValidationError
 from fatqat.simulator._engine._execution_policy import _ExecutionPolicy
 
@@ -68,7 +68,7 @@ def _run(
 
 
 def test_numba_compiled_multi_shot_compatibility():
-    from fatqat.simulator._engine import nb
+    from fatqat.simulator._engine.engines import numba as nb
 
     compatible = (MeasurementStep((0,), (0,)), ResetStep((0,)))
     unsupported = compatible + (LossStep((0,), p=0.1),)
@@ -121,7 +121,7 @@ def test_engine_fast_counts_and_state_share_collapse_event():
 )
 def test_occupancy_loss_reload_and_feedback_start_fresh(runtime, occupied, reported):
     if runtime == "numba":
-        from fatqat.simulator._engine.nb import NumbaSVEngine
+        from fatqat.simulator._engine.engines.numba import NumbaSVEngine
 
         engine = NumbaSVEngine()
     else:
@@ -181,7 +181,7 @@ def test_initial_register_drives_feedback_and_is_fresh_per_shot(mode):
     if mode == "numpy":
         engine = NumpySVEngine()
     else:
-        from fatqat.simulator._engine.nb import NumbaSVEngine
+        from fatqat.simulator._engine.engines.numba import NumbaSVEngine
 
         engine = NumbaSVEngine()
     initial = _InitialEvolutionState(

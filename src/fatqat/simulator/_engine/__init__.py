@@ -13,7 +13,7 @@ assembles public results. Engines remain private rather than a supported
 extension point; users reach simulation through
 :class:`fatqat.simulator.Simulator`.
 
-Import the concrete modules directly (``from ._engine.numpy.engine import
+Import the concrete modules directly (``from ._engine.engines.numpy import
 NumpySVEngine``). The `Simulator` loads the selected runtime module lazily
 when it is constructed.
 """

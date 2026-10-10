@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from fatqat.simulator._engine.numpy.engine import NumpySVEngine
+from fatqat.simulator._engine.engines.numpy import NumpySVEngine
 from fatqat._backends.steps import ApplyMatrixStep
 
 _H = np.array([[1, 1], [1, -1]], dtype=complex) / np.sqrt(2)

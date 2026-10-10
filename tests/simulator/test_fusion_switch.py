@@ -97,7 +97,7 @@ def test_public_fusion_switch_selects_the_materialized_rewrite(monkeypatch):
     # The production rewrite preserves semantics, so a deterministic sentinel
     # gives the public switch an exact observable effect without relying on
     # platform-specific floating-point association differences.
-    from fatqat.simulator._engine import nb
+    from fatqat.simulator._engine.engines import numba as nb
 
     monkeypatch.setattr(nb, "_fuse_gate_channels", lambda plan: plan[-1:])
     noise = fq.NoiseModel()

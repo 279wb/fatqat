@@ -239,7 +239,7 @@ def test_numba_compiled_multi_shot_kernel_applies_readout_confusion():
     # error was silently dropped under runtime="numba" - X then always-flip
     # readout reported "1" instead of "0".
     pytest.importorskip("numba")
-    from fatqat.simulator._engine.nb import _plan_compilable
+    from fatqat.simulator._engine.engines.numba import _plan_compilable
 
     always_flip = np.array([[0.0, 1.0], [1.0, 0.0]])
     noise = _readout_model(always_flip)

@@ -91,7 +91,7 @@ from .._execution_policy import (
     _materialization_policy,
 )
 from ..base import MatrixEngine
-from .kernels import (
+from ..numerics.numpy import (
     _ChannelRouteCache,
     _ResetChannelCache,
     _allocate_statevector,

@@ -168,7 +168,7 @@ def test_sampled_unitary_route_reproduces_the_jump_route_exactly(runtime, monkey
     sampled = _counts(runtime, noise, program)
 
     monkeypatch.setattr(
-        "fatqat.simulator._engine.numpy.kernels._sampled_unitary_branches",
+        "fatqat.simulator._engine.numerics.numpy._sampled_unitary_branches",
         lambda _kraus_ops: None,
     )
     if runtime == "numba":
@@ -308,7 +308,7 @@ def test_pauli_channel_process_batches_match_serial():
 
 def test_pauli_sampling_does_not_change_the_per_shot_draw_budget():
     pytest.importorskip("numba")
-    from fatqat.simulator._engine.nb import NumbaSVEngine
+    from fatqat.simulator._engine.engines.numba import NumbaSVEngine
 
     backend = Simulator("SV", noise=_pauli_noise())
     program = _ghz_program()

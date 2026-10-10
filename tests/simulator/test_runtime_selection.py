@@ -28,7 +28,7 @@ def _bell_program():
     ],
 )
 def test_default_runtime_is_numba_for_every_method(method, engine_name):
-    from fatqat.simulator._engine import nb
+    from fatqat.simulator._engine.engines import numba as nb
 
     assert type(Simulator(method=method)._engine) is getattr(nb, engine_name)
 
@@ -42,14 +42,14 @@ def test_default_runtime_is_numba_for_every_method(method, engine_name):
     ],
 )
 def test_fake_simulator_defaults_to_numba(backend_cls):
-    from fatqat.simulator._engine.nb import NumbaSVEngine
+    from fatqat.simulator._engine.engines.numba import NumbaSVEngine
 
     assert type(backend_cls()._engine) is NumbaSVEngine
 
 
 def test_numba_runtime_selects_the_numba_engine():
     pytest.importorskip("numba")
-    from fatqat.simulator._engine.nb import NumbaSVEngine
+    from fatqat.simulator._engine.engines.numba import NumbaSVEngine
 
     backend = Simulator(method="SV", runtime="numba")
     assert type(backend._engine) is NumbaSVEngine
@@ -65,7 +65,7 @@ def test_unknown_runtime_rejected_at_construction():
 
 def test_density_matrix_numba_selects_the_numba_dm_engine():
     pytest.importorskip("numba")
-    from fatqat.simulator._engine.nb import NumbaDMEngine
+    from fatqat.simulator._engine.engines.numba import NumbaDMEngine
 
     backend = Simulator(method="DM", runtime="numba")
     assert type(backend._engine) is NumbaDMEngine
@@ -130,7 +130,7 @@ def test_serial_and_threaded_compiled_shots_are_identical():
 def test_serial_shots_with_threaded_kernels_match_serial_kernels():
     pytest.importorskip("numba")
     from fatqat.simulator import AtomArraySimulator
-    from fatqat.simulator._engine import nb
+    from fatqat.simulator._engine.engines import numba as nb
 
     if nb._MAX_THREADS < 2:
         pytest.skip("Numba exposes no parallel thread capacity")
@@ -163,7 +163,7 @@ def test_serial_shots_with_threaded_kernels_match_serial_kernels():
 @pytest.mark.parametrize("fail", [False, True])
 def test_numba_kernel_thread_scope_expands_and_restores(fail, monkeypatch):
     numba = pytest.importorskip("numba")
-    from fatqat.simulator._engine import nb
+    from fatqat.simulator._engine.engines import numba as nb
 
     if nb._MAX_THREADS < 2:
         pytest.skip("Numba exposes no parallel thread capacity")
@@ -208,7 +208,7 @@ def test_numba_kernel_thread_scope_expands_and_restores(fail, monkeypatch):
 
 def test_explicit_threads_accepts_an_empty_plan():
     pytest.importorskip("numba")
-    from fatqat.simulator._engine import nb
+    from fatqat.simulator._engine.engines import numba as nb
 
     state = (
         Simulator(runtime="numba")

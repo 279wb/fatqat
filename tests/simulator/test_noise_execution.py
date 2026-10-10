@@ -18,7 +18,7 @@ from fatqat.noise import (
     TransitionRelaxation,
     default_channel_implementation_map,
 )
-from fatqat.simulator._engine.numpy.engine import NumpySVEngine
+from fatqat.simulator._engine.engines.numpy import NumpySVEngine
 from fatqat.simulator._execution_contract import (
     _ExecutionContext,
     _InitialEvolutionState,
@@ -553,7 +553,7 @@ def test_numba_compiled_multi_shot_plan_matches_numpy_channels():
     # quantum-jump branches from the reduced density matrix while NumPy norms
     # each branch - same distribution, counts agree statistically not bit-wise.
     pytest.importorskip("numba")
-    from fatqat.simulator._engine.nb import NumbaSVEngine, _plan_compilable
+    from fatqat.simulator._engine.engines.numba import NumbaSVEngine, _plan_compilable
 
     noise = NoiseModel()
     noise.add(Depolarizing(p=0.3), operation=ops.X)
@@ -649,8 +649,8 @@ def test_reduced_diagonal_matches_the_full_reduced_density_matrix():
     # The marginal the diagonal weighing reads must be the diagonal of what
     # the general path builds, for any target tuple and mix of dimensions.
     pytest.importorskip("numba")
-    from fatqat.simulator._engine.nb import NumbaSVEngine
-    from fatqat.simulator._engine.numba.kernels._channel import (
+    from fatqat.simulator._engine.engines.numba import NumbaSVEngine
+    from fatqat.simulator._engine.numerics.numba._channel import (
         _reduced_density,
         _reduced_diagonal,
     )
