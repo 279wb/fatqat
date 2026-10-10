@@ -16,6 +16,36 @@ _PERMUTATION = 2
 
 
 @njit(cache=True)
+def _classify_matrix(
+    matrix: np.ndarray, columns: np.ndarray, values: np.ndarray
+) -> int:  # pragma: no cover - compiled by Numba
+    """Classify ``matrix`` and fill the single-nonzero-per-row description.
+
+    For each row ``r`` records the column ``columns[r]`` of its (sole) nonzero and
+    the value ``values[r]`` there. Returns ``_DIAGONAL`` if every nonzero is on
+    the diagonal, ``_PERMUTATION`` if each row has exactly one nonzero (off the
+    diagonal somewhere), else ``_DENSE`` (``columns`` / ``values`` unused). Gate
+    matrices are analytic, so structural zeros are exact - no tolerance needed.
+    """
+    d = matrix.shape[0]
+    is_diagonal = True
+    for r in range(d):
+        count = 0
+        column = 0
+        for c in range(d):
+            if matrix[r, c].real != 0.0 or matrix[r, c].imag != 0.0:
+                count += 1
+                column = c
+        if count != 1:
+            return _DENSE
+        columns[r] = column
+        values[r] = matrix[r, column]
+        if column != r:
+            is_diagonal = False
+    return _DIAGONAL if is_diagonal else _PERMUTATION
+
+
+@njit(cache=True)
 def _spread_base(
     start: int, comp_strides: np.ndarray, comp_dims: np.ndarray, counter: np.ndarray
 ) -> int:  # pragma: no cover - compiled by Numba

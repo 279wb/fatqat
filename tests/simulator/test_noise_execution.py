@@ -649,8 +649,8 @@ def test_reduced_diagonal_matches_the_full_reduced_density_matrix():
     # The marginal the diagonal weighing reads must be the diagonal of what
     # the general path builds, for any target tuple and mix of dimensions.
     pytest.importorskip("numba")
-    from fatqat.simulator._engine.nb import (
-        NumbaSVEngine,
+    from fatqat.simulator._engine.nb import NumbaSVEngine
+    from fatqat.simulator._engine.numba.kernels._channel import (
         _reduced_density,
         _reduced_diagonal,
     )

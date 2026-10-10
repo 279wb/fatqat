@@ -18,13 +18,13 @@ numba = pytest.importorskip("numba")
 
 # pylint: disable=wrong-import-position  # these need the importorskip above
 from fatqat.simulator._engine.nb import (
-    _classify_matrix,
     _DENSE,
     _fuse_gate_channels,
     _KERNEL_SPECS,
     _superop_csr,
     NumbaSVEngine,
 )
+from fatqat.simulator._engine.numba.kernels._apply import _classify_matrix
 from fatqat.simulator._engine.numpy.engine import NumpySVEngine
 from fatqat.noise import Depolarizing
 from fatqat.noise.catalog import depolarizing_rule
