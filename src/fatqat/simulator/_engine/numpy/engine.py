@@ -93,7 +93,14 @@ from .._execution_policy import (
     _materialization_policy,
 )
 from ..base import MatrixEngine, _shot_seed_sequences
-from .kernels import _contract_local, _digit, _measured_keep_mask
+from .kernels import (
+    _apply_statevector,
+    _contract_local,
+    _digit,
+    _measured_keep_mask,
+    _project_statevector,
+    _statevector_probabilities,
+)
 from ..parallel import _run_shots_in_processes
 from ..state import ClassicalState, EvolutionState, QuantumState
 
@@ -723,29 +730,19 @@ class NumpySVEngine(_NumpyMatrixEngine):
         self, state: np.ndarray, matrix: np.ndarray, targets: Sequence[int]
     ) -> np.ndarray:
         """Apply a local matrix to flat ``targets``, returning the new flat state."""
-        n = len(self._dims)
-        k = len(targets)
-        local_dims = tuple(self._dims[t] for t in targets)
-        psi = state.reshape(self._reversed_dims)
-        target_axes = [n - 1 - q for q in targets]
-        m = np.asarray(matrix, dtype=complex).reshape(local_dims + local_dims)
-        return _contract_local(m, psi, target_axes, n, k).reshape(-1)
+        return _apply_statevector(
+            state, matrix, targets, self._dims, self._reversed_dims
+        )
 
     def probabilities(self) -> np.ndarray:
-        probabilities = np.abs(self.state) ** 2
-        total = probabilities.sum()
-        return probabilities / total if total > 0 else probabilities
+        return _statevector_probabilities(self.state)
 
     def collapse(
         self, measured_subsystems: Sequence[int], rng: np.random.Generator
     ) -> int:
         state = self.state
         idx = int(rng.choice(len(state), p=self.probabilities()))
-        keep = _measured_keep_mask(idx, measured_subsystems, self._dims, len(state))
-        new = state.copy()
-        new[~keep] = 0.0
-        norm = np.linalg.norm(new)
-        self._state = new / norm if norm > 0 else new
+        self._state = _project_statevector(state, idx, measured_subsystems, self._dims)
         return idx
 
     def reset_subsystems(

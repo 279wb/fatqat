@@ -69,3 +69,41 @@ def _measured_keep_mask(
     digits = (basis[:, None] // stride_arr) % dim_arr
     idx_digits = (idx // stride_arr) % dim_arr
     return np.all(digits == idx_digits, axis=1)
+
+
+def _apply_statevector(
+    state: np.ndarray,
+    matrix: np.ndarray,
+    targets: Sequence[int],
+    dims: Sequence[int],
+    reversed_dims: tuple[int, ...],
+) -> np.ndarray:
+    """Apply a local matrix using the caller's prepared subsystem dimensions."""
+    n = len(dims)
+    k = len(targets)
+    local_dims = tuple(dims[t] for t in targets)
+    psi = state.reshape(reversed_dims)
+    target_axes = [n - 1 - q for q in targets]
+    m = np.asarray(matrix, dtype=complex).reshape(local_dims + local_dims)
+    return _contract_local(m, psi, target_axes, n, k).reshape(-1)
+
+
+def _statevector_probabilities(state: np.ndarray) -> np.ndarray:
+    """Return normalized basis probabilities, preserving an all-zero input."""
+    probabilities = np.abs(state) ** 2
+    total = probabilities.sum()
+    return probabilities / total if total > 0 else probabilities
+
+
+def _project_statevector(
+    state: np.ndarray,
+    idx: int,
+    measured_subsystems: Sequence[int],
+    dims: Sequence[int],
+) -> np.ndarray:
+    """Return a normalized physical projection without modifying the input."""
+    keep = _measured_keep_mask(idx, measured_subsystems, dims, len(state))
+    new = state.copy()
+    new[~keep] = 0.0
+    norm = np.linalg.norm(new)
+    return new / norm if norm > 0 else new
