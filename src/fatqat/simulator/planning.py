@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, fields, replace
 from math import prod
 from numbers import Real
 from typing import Any, cast
+
+import numpy as np
 
 from .._index_allocation import _ClassicalAllocation, _EngineAllocation
 from .._parameter_binding import _parameter_field_slots
@@ -17,9 +19,22 @@ from ..errors import (
 )
 from ..implementation import MatrixImplementation, MatrixImplementationMap
 from ..implementation._operation_registry import _select_implementation
-from ..implementation.matrices import _H, _SDG
+from ..implementation.matrices import (
+    _H,
+    _SDG,
+    _cphase_batch,
+    _phase_batch,
+    _rx_batch,
+    _ry_batch,
+    _rz_batch,
+    _subspace_rx_batch,
+    _subspace_ry_batch,
+    _subspace_rz_batch,
+    _u_matrix_batch,
+)
 from ..noise import ChannelImplementationMap, NoiseModel
 from ..noise.base import _validate_kraus_shapes
+from .. import operations as ops
 from ..operations import Measurement, Operation, PulseOperation
 from ..noise.loss import Loss
 from ..parameters import Parameter
@@ -441,6 +456,138 @@ def _materialize_recipe(
     )
 
 
+# Built-in parametric rules with a batched twin in `implementation.matrices`.
+# A recipe takes the batched path only when its kernel identity is listed here
+# and its operation is exactly the listed class: only canonical registrations
+# carry a kernel key, but a keyed rule can be re-registered for another class,
+# which may override `validate_targets` or the fields a builder reads. The
+# listed classes validate targets without reading their angles, and the
+# template was validated when it joined the program, so replay has nothing to
+# re-check. A builder receives a field accessor (a θ column for a `Parameter`
+# field, the declared value otherwise) and the targets.
+_BatchedBuilder = Callable[[Callable[[str], Any], tuple[RegisterRef, ...]], np.ndarray]
+_BATCHED_RULES: dict[BuiltinKernelKey, tuple[type[Operation], _BatchedBuilder]] = {
+    BuiltinKernelKey.RX: (ops.RX, lambda field, _: _rx_batch(field("theta"))),
+    BuiltinKernelKey.RY: (ops.RY, lambda field, _: _ry_batch(field("theta"))),
+    BuiltinKernelKey.RZ: (ops.RZ, lambda field, _: _rz_batch(field("theta"))),
+    BuiltinKernelKey.PHASE: (
+        ops.Phase,
+        lambda field, _: _phase_batch(field("theta")),
+    ),
+    BuiltinKernelKey.U: (
+        ops.U,
+        lambda field, _: _u_matrix_batch(field("theta"), field("phi"), field("lam")),
+    ),
+    BuiltinKernelKey.U1: (ops.U1, lambda field, _: _phase_batch(field("lam"))),
+    BuiltinKernelKey.U2: (
+        ops.U2,
+        lambda field, _: _u_matrix_batch(np.pi / 2, field("phi"), field("lam")),
+    ),
+    BuiltinKernelKey.U3: (
+        ops.U3,
+        lambda field, _: _u_matrix_batch(field("theta"), field("phi"), field("lam")),
+    ),
+    BuiltinKernelKey.CPHASE: (
+        ops.CPhase,
+        lambda field, _: _cphase_batch(field("theta")),
+    ),
+    BuiltinKernelKey.SUBSPACE_RX: (
+        ops.SubspaceRX,
+        lambda field, targets: _subspace_rx_batch(
+            targets[0].register.dim, field("subspace"), field("theta")
+        ),
+    ),
+    BuiltinKernelKey.SUBSPACE_RY: (
+        ops.SubspaceRY,
+        lambda field, targets: _subspace_ry_batch(
+            targets[0].register.dim, field("subspace"), field("theta")
+        ),
+    ),
+    BuiltinKernelKey.SUBSPACE_RZ: (
+        ops.SubspaceRZ,
+        lambda field, targets: _subspace_rz_batch(
+            targets[0].register.dim, field("subspace"), field("theta")
+        ),
+    ),
+}
+
+# Rows whose batched matrices are held at once, bounding replay memory to
+# ``_REPLAY_CHUNK_ROWS`` matrices per parametric gate however long the batch.
+_REPLAY_CHUNK_ROWS = 256
+
+# Integers up to this magnitude convert to float64 exactly.
+_EXACT_FLOAT64_INT = 2**53
+
+
+def _float64_column(values: Sequence[Real]) -> np.ndarray | None:
+    """Return one θ column as float64, or ``None`` if its rows replay singly.
+
+    A scalar rule computes in each value's own type. float64 arithmetic over
+    the column reproduces it exactly for ``float`` (including NumPy float64)
+    values and for integers float64 represents exactly; any other real scalar
+    (NumPy float32, longdouble, a huge integer) keeps the per-row rule call.
+    """
+    for value in values:
+        if isinstance(value, float):
+            continue
+        if isinstance(value, (int, np.integer)) and (
+            abs(int(value)) <= _EXACT_FLOAT64_INT
+        ):
+            continue
+        return None
+    return np.array(values, dtype=np.float64)
+
+
+def _batched_recipe_matrices(
+    recipe: _MatrixRecipe, column: Callable[[int], np.ndarray | None]
+) -> np.ndarray | None:
+    """Build one recipe's matrices for a chunk of rows, or ``None`` to replay.
+
+    ``column(slot)`` is the chunk's float64 θ column for one slot. Returns a
+    read-only ``(rows, d, d)`` stack, or ``None`` when the recipe has no
+    batched twin, a column cannot be batched, or the result would fail shape
+    validation - per-row replay then raises the same error ``run()`` would.
+    """
+    entry = _BATCHED_RULES.get(recipe.kernel_key)  # type: ignore[arg-type]
+    template = recipe.operation_template
+    if entry is None or type(template) is not entry[0]:
+        return None
+    values: dict[str, Any] = {}
+    slot_index = 0
+    for field_info in fields(template):
+        value = getattr(template, field_info.name)
+        if isinstance(value, Parameter):
+            value = column(recipe.param_slots[slot_index])
+            slot_index += 1
+            if value is None:
+                return None
+        values[field_info.name] = value
+    stack = entry[1](values.__getitem__, recipe.targets)
+    expected = prod(recipe.target_dims)
+    if stack.shape[1:] != (expected, expected):
+        return None
+    stack.flags.writeable = False
+    return stack
+
+
+def _replay_step(
+    step: ResolvedStep | _MatrixRecipe,
+    theta: Sequence[Real],
+    matrix: np.ndarray | None,
+) -> ResolvedStep:
+    """Realize one plan step for one row, from its batched matrix if given."""
+    if not isinstance(step, _MatrixRecipe):
+        return step
+    if matrix is None:
+        return _materialize_recipe(step, theta)
+    return ApplyMatrixStep(
+        matrix=matrix,
+        target_indices=step.target_indices,
+        condition=step.condition,
+        kernel_key=step.kernel_key,
+    )
+
+
 @dataclass(frozen=True)
 class _ParametricPlan:
     """A lowered plan whose parameter-holding gates are still recipes.
@@ -463,11 +610,35 @@ class _ParametricPlan:
 
     def materialize(self, theta: Sequence[Real]) -> tuple[ResolvedStep, ...]:
         """Return the concrete, engine-ready plan for one θ vector."""
-        return tuple(
-            (
-                _materialize_recipe(step, theta)
-                if isinstance(step, _MatrixRecipe)
-                else step
-            )
-            for step in self.steps
-        )
+        return tuple(_replay_step(step, theta, None) for step in self.steps)
+
+    def materialize_rows(
+        self, thetas: Sequence[Sequence[Real]]
+    ) -> Iterator[tuple[ResolvedStep, ...]]:
+        """Yield the concrete, engine-ready plan for each θ vector in order.
+
+        Equivalent to calling ``materialize`` on each row. Built-in
+        parametric gates get their matrices for a chunk of rows at once from
+        the batched twins of their rules; every other recipe calls its rule
+        per row, so a rule or shape failure still raises when its row is
+        reached, after the earlier rows were yielded.
+        """
+        for start in range(0, len(thetas), _REPLAY_CHUNK_ROWS):
+            chunk = thetas[start : start + _REPLAY_CHUNK_ROWS]
+            columns = [
+                _float64_column([theta[slot] for theta in chunk])
+                for slot in range(len(self.param_order))
+            ]
+            stacks = [
+                (
+                    _batched_recipe_matrices(step, columns.__getitem__)
+                    if isinstance(step, _MatrixRecipe)
+                    else None
+                )
+                for step in self.steps
+            ]
+            for row, theta in enumerate(chunk):
+                yield tuple(
+                    _replay_step(step, theta, None if stack is None else stack[row])
+                    for step, stack in zip(self.steps, stacks)
+                )

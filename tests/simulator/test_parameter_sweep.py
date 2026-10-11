@@ -24,6 +24,7 @@ from fatqat.operations import Operation
 from fatqat.resource_layout import ResourceLayout
 from fatqat.result import Result
 from fatqat.simulator import Simulator
+from fatqat.simulator import planning
 from fatqat.simulator.planning import _MatrixRecipe, _ParametricPlan
 
 
@@ -170,6 +171,114 @@ def test_counts_seed_and_options_match_manual_repeated_runs():
     assert [result.get_counts() for result in swept] == [
         result.get_counts() for result in explicit
     ]
+
+
+_STATE_ONLY = {"shots": 0, "result_config": {"counts": False, "final_state": True}}
+
+
+@pytest.mark.parametrize(
+    ("arity", "build", "targets", "dim"),
+    [
+        (1, lambda p: ops.RX(p[0]), 0, 2),
+        (1, lambda p: ops.RY(p[0]), 0, 2),
+        (1, lambda p: ops.RZ(p[0]), 0, 2),
+        (1, lambda p: ops.Phase(p[0]), 0, 2),
+        (2, lambda p: ops.U(p[0], p[1], 0.7), 0, 2),
+        (1, lambda p: ops.U1(p[0]), 0, 2),
+        (1, lambda p: ops.U2(0.3, p[0]), 0, 2),
+        (3, lambda p: ops.U3(p[0], p[1], p[2]), 0, 2),
+        (1, lambda p: ops.CPhase(p[0]), (0, 1), 2),
+        (1, lambda p: ops.SubspaceRX(p[0], (0, 2)), 0, 3),
+        (1, lambda p: ops.SubspaceRY(p[0], (1, 2)), 0, 3),
+        (1, lambda p: ops.SubspaceRZ(p[0], (0, 2)), 0, 3),
+    ],
+    ids=[
+        "RX",
+        "RY",
+        "RZ",
+        "Phase",
+        "U-mixed",
+        "U1",
+        "U2",
+        "U3",
+        "CPhase",
+        "SubspaceRX",
+        "SubspaceRY",
+        "SubspaceRZ",
+    ],
+)
+def test_every_builtin_parametric_gate_matches_explicit_loop(
+    arity, build, targets, dim
+):
+    params = [fq.Parameter(f"p{index}") for index in range(arity)]
+    program = fq.Program([fq.QuantumRegister(2, dim=dim)])
+    for qudit in range(2):
+        program.add(ops.H if dim == 2 else ops.Fourier, qudit)
+    program.add(build(params), targets)
+    values = np.random.default_rng(11).uniform(-7.0, 7.0, size=(5, arity))
+    backend = Simulator("SV")
+
+    swept = backend.run_sweep(
+        program,
+        {param: values[:, index] for index, param in enumerate(params)},
+        **_STATE_ONLY,
+    ).result()
+    explicit = [
+        backend.run(program.assign_parameters(dict(zip(params, row))), **_STATE_ONLY)
+        .result()
+        .get_statevector()
+        for row in values
+    ]
+
+    for result, expected in zip(swept, explicit, strict=True):
+        np.testing.assert_allclose(
+            result.get_statevector(), expected, rtol=0, atol=1e-12
+        )
+
+
+def test_counts_match_explicit_loop_across_replay_chunks():
+    theta = fq.Parameter("theta")
+    program = fq.Program(1, 1)
+    program.add(ops.RY(theta), 0)
+    program.measure(0, 0)
+    values = np.linspace(0.0, np.pi, planning._REPLAY_CHUNK_ROWS + 3)
+    backend = Simulator("SV")
+    options = {"shots": 16, "simulation_config": {"seed": 5}}
+
+    swept = backend.run_sweep(program, {theta: values}, **options).result()
+    explicit = [
+        backend.run(program.assign_parameters({theta: value}), **options)
+        .result()
+        .get_counts()
+        for value in values
+    ]
+
+    assert [result.get_counts() for result in swept] == explicit
+
+
+@pytest.mark.parametrize(
+    "values",
+    [[np.float32(0.2), np.float32(1.3)], [1, 2], [0.2, 1]],
+    ids=["float32", "int", "mixed"],
+)
+def test_sweep_keeps_each_value_type_like_explicit_binding(values):
+    # A rule computes in its value's own type, so a float32 angle realizes a
+    # float32-precision matrix; the sweep must not silently widen it.
+    theta = fq.Parameter("theta")
+    program = fq.Program(1)
+    program.add(ops.RX(theta), 0)
+    backend = Simulator("SV")
+
+    swept = backend.run_sweep(program, {theta: values}, **_STATE_ONLY).result()
+    explicit = [
+        backend.run(program.assign_parameters({theta: value}), **_STATE_ONLY)
+        .result()
+        .get_statevector()
+        for value in values
+    ]
+
+    for result, expected in zip(swept, explicit, strict=True):
+        assert np.array_equal(result.get_statevector(), expected)
 
 
 def test_batch_validation_finishes_before_row_zero(monkeypatch):
