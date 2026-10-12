@@ -36,7 +36,7 @@ from ...numerics.numba._measurement import (
     _sv_project_kernel,
     _sv_reset_kernel,
 )
-from ...state import NumbaClassicalState, NumbaEvolutionState, NumbaQuantumState
+from ...state import NumbaClassicalState, NumbaEvolutionState
 
 
 class _PreparedSVTrajectories(NamedTuple):
@@ -410,7 +410,7 @@ def _initialize_shot_state(start, state_size, custom_start, n_clbits, clbits_sta
     clbits = (
         clbits_start.copy() if clbits_start.size else np.zeros(n_clbits, dtype=np.int64)
     )
-    return NumbaEvolutionState(NumbaQuantumState(quantum), NumbaClassicalState(clbits))
+    return NumbaEvolutionState(quantum, NumbaClassicalState(clbits))
 
 
 @njit(cache=True, parallel=True)
@@ -508,7 +508,7 @@ def _run_sv_trajectories(
             )
             if kind == 1:  # measurement (unconditional)
                 quantum, draw = _measure_step(
-                    evolution.quantum.data,
+                    evolution.quantum,
                     evolution.classical.clbits,
                     step_data[st],
                     me_ptr,
@@ -521,12 +521,10 @@ def _run_sv_trajectories(
                     uniforms,
                     draw,
                 )
-                evolution = NumbaEvolutionState(
-                    NumbaQuantumState(quantum), evolution.classical
-                )
+                evolution = NumbaEvolutionState(quantum, evolution.classical)
             elif kind == 0 and passes:  # gate
                 _apply_matrix_step(
-                    evolution.quantum.data,
+                    evolution.quantum,
                     step_data[st],
                     ap_mat_ptr,
                     ap_dim,
@@ -544,7 +542,7 @@ def _run_sv_trajectories(
                 )
             elif kind == 2 and passes:  # reset
                 quantum = _reset_step(
-                    evolution.quantum.data,
+                    evolution.quantum,
                     step_data[st],
                     rs_ptr,
                     rs_len,
@@ -552,13 +550,11 @@ def _run_sv_trajectories(
                     rs_dim,
                     uniforms[draw],
                 )
-                evolution = NumbaEvolutionState(
-                    NumbaQuantumState(quantum), evolution.classical
-                )
+                evolution = NumbaEvolutionState(quantum, evolution.classical)
                 draw += 1
             elif kind == 3 and passes:  # channel noise (applied in place)
                 _apply_channel_step(
-                    evolution.quantum.data,
+                    evolution.quantum,
                     step_data[st],
                     ch_kra_ptr,
                     ch_num_kraus,

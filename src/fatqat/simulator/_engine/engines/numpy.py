@@ -101,7 +101,7 @@ from ..numerics.numpy import (
     _statevector_probabilities,
     _sample_unitary,
 )
-from ..state import ClassicalState, EvolutionState, QuantumState
+from ..state import ClassicalState, EvolutionState
 
 # --- shared NumPy operations ---
 
@@ -142,7 +142,7 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
         clbits = initial.classical.clbits
         occupied = initial.classical.occupied
         self._evolution_state = EvolutionState(
-            QuantumState(quantum, self._state_field),
+            quantum,
             ClassicalState(
                 clbits=None if clbits is None else list(clbits),
                 occupied=None if occupied is None else set(occupied),

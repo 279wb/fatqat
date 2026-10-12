@@ -13,18 +13,6 @@ QuantumDataT = TypeVar("QuantumDataT")
 
 
 @dataclass(slots=True)
-class QuantumState(Generic[QuantumDataT]):
-    """The authoritative quantum data and its concrete representation.
-
-    The engine determines the data type and layout. This record does not
-    prescribe numerical operations or imply support for arbitrary arrays.
-    """
-
-    data: QuantumDataT
-    representation: str
-
-
-@dataclass(slots=True)
 class ClassicalState:
     """Classical container whose components are allocated only when needed.
 
@@ -40,20 +28,15 @@ class ClassicalState:
 
 @dataclass(slots=True)
 class EvolutionState(Generic[QuantumDataT]):
-    """Quantum and classical containers owned by one active evolution.
+    """Native quantum data and classical state owned by one active evolution.
 
+    The engine determines the quantum data type, layout, and representation.
     An empty classical container allocates no component buffers and does not
     indicate capability support. Every evolution receives its own container.
     """
 
-    quantum: QuantumState[QuantumDataT]
+    quantum: QuantumDataT
     classical: ClassicalState = field(default_factory=ClassicalState)
-
-
-class NumbaQuantumState(NamedTuple):
-    """Quantum data for a compiled statevector shot."""
-
-    data: np.ndarray
 
 
 class NumbaClassicalState(NamedTuple):
@@ -65,5 +48,5 @@ class NumbaClassicalState(NamedTuple):
 class NumbaEvolutionState(NamedTuple):
     """Quantum and classical storage owned by one compiled statevector shot."""
 
-    quantum: NumbaQuantumState
+    quantum: np.ndarray
     classical: NumbaClassicalState

@@ -34,7 +34,7 @@ from .._execution_policy import (
     _resolve_execution_policy,
 )
 from ..parallel import _run_shots_in_processes
-from ..state import EvolutionState, QuantumDataT, QuantumState
+from ..state import EvolutionState, QuantumDataT
 from ..workflows.python import (
     _PreparedPythonExecution,
     _run_operator_plan,
@@ -66,7 +66,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         """Forward existing kernel access to the owned quantum data."""
         if self._evolution_state is None:
             return None
-        return self._evolution_state.quantum.data
+        return self._evolution_state.quantum
 
     @_state.setter
     def _state(self, value: QuantumDataT | None) -> None:
@@ -74,11 +74,9 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         if value is None:
             self._evolution_state = None
         elif self._evolution_state is None:
-            self._evolution_state = EvolutionState(
-                QuantumState(value, self._state_field)
-            )
+            self._evolution_state = EvolutionState(value)
         else:
-            self._evolution_state.quantum.data = value
+            self._evolution_state.quantum = value
 
     @property
     def state(self) -> QuantumDataT:
