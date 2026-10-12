@@ -117,7 +117,6 @@ from ..state import ClassicalState, EvolutionState, QuantumState
 from ..workflows.python import (
     _run_operator_plan,
     _run_single_pass,
-    _run_one_shot,
     _run_per_shot,
     _run_shot_batch,
 )
@@ -133,11 +132,6 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
     ``probabilities``, ``collapse``, ``reset_subsystems`` and their
     capability declarations. The quantum representation names the result field.
     """
-
-    _run_single_pass = _run_single_pass
-    _run_per_shot = _run_per_shot
-    _run_shot_batch = _run_shot_batch
-    _run_one_shot = _run_one_shot
 
     def initialize(
         self,
@@ -335,9 +329,10 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
         plan, measurements = payload[:2]
         with self._execution_scope(policy):
             if policy.execution_path == "per_shot":
-                return self._run_per_shot(plan, context, initial_state=initial_state)
+                return _run_per_shot(self, plan, context, initial_state=initial_state)
             assert policy.execution_path == "single_pass"
-            return self._run_single_pass(
+            return _run_single_pass(
+                self,
                 plan,
                 measurements,
                 context.shots,
@@ -361,7 +356,8 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
         self.configure_system(context.system_dims, context.n_clbits)
         plan = payload[0]
         with self._execution_scope(policy):
-            return self._run_shot_batch(
+            return _run_shot_batch(
+                self,
                 plan,
                 seed_batch,
                 initial_state,
@@ -577,9 +573,7 @@ class _NumpyOperatorEngine(_NumpyMatrixEngine):
             )
             rng = np.random.default_rng(context.seed)
             request = context.request
-            return self._run_operator_plan(plan, rng, request)
-
-    _run_operator_plan = _run_operator_plan
+            return _run_operator_plan(self, plan, rng, request)
 
     def probabilities(self) -> np.ndarray:
         """Unsupported: an operator is a map, not a distribution over states."""

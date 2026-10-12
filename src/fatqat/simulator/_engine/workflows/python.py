@@ -1,6 +1,6 @@
 """Shared Python state and operator sequencing for matrix-family numerical runtimes.
 
-Functions bind directly to the matrix engines, which supply numerical operations
+Functions receive matrix engines, which supply numerical operations
 and evolving state. The workflow owns step sequencing, classical updates, and
 random-stream coordination for single-evolution, per-shot, and operator execution.
 """
@@ -116,7 +116,8 @@ def _run_per_shot(
     request = context.request
     state_requested = getattr(request, engine._state_field)
     n_iters = context.shots if request.counts else (1 if state_requested else 0)
-    snapshots = engine._run_shot_batch(
+    snapshots = _run_shot_batch(
+        engine,
         plan,
         np.random.SeedSequence(context.seed).spawn(n_iters),
         initial_state,
@@ -149,7 +150,7 @@ def _run_shot_batch(
             initial_state=initial_state,
         )
         snapshots.append(
-            engine._run_one_shot(plan, np.random.default_rng(seed_sequence))
+            _run_one_shot(engine, plan, np.random.default_rng(seed_sequence))
         )
     return snapshots
 
