@@ -42,8 +42,7 @@ from ..workflows.python import (
     _PreparedPythonExecution,
     _run_operator_plan,
     _run_single_pass,
-    _run_per_shot,
-    _run_shot_batch,
+    _run_one_shot,
 )
 
 
@@ -336,32 +335,43 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         assert policy.shot_strategy != "processes"
         self.configure_system(context.system_dims, context.n_clbits)
         with self._execution_scope(policy):
+            state_requested = getattr(context.request, self._state_field)
+            rows = None
             if policy.execution_path == "per_shot":
-                return _run_per_shot(
-                    self, payload.plan, context, initial_state=initial_state
+                rows = self._run_per_shot(
+                    payload.plan,
+                    context,
+                    initial_state,
+                    state_requested=state_requested,
                 )
-            if policy.execution_path == "operator":
-                assert policy.shot_strategy == "none"
+            else:
+                rng = np.random.default_rng(context.seed)
                 self.initialize(
-                    self._dims,
-                    self._n_clbits,
+                    context.system_dims,
+                    context.n_clbits,
                     initial_state=initial_state,
                 )
-                return _run_operator_plan(
-                    self,
-                    payload.plan,
-                    np.random.default_rng(context.seed),
-                    context.request,
-                )
-            assert policy.execution_path == "single_pass"
-            return _run_single_pass(
-                self,
-                payload.plan,
-                payload.deferred_measurements,
-                context.shots,
-                np.random.default_rng(context.seed),
-                context.request,
-                initial_state,
+                if policy.execution_path == "operator":
+                    assert policy.shot_strategy == "none"
+                    _run_operator_plan(self, payload.plan, rng)
+                else:
+                    assert policy.execution_path == "single_pass"
+                    assert self._evolution_state is not None
+                    rows = _run_single_pass(
+                        self,
+                        payload.plan,
+                        payload.deferred_measurements,
+                        self._evolution_state.classical,
+                        context,
+                        rng,
+                        state_requested=state_requested,
+                    )
+            outcome_keys, outcome_counts = (
+                reduce_to_counts(rows) if rows is not None else (None, None)
+            )
+            state = self.export_state() if state_requested else None
+            return RawResult(
+                outcome_keys=outcome_keys, outcome_counts=outcome_counts, state=state
             )
 
     def execute_shot_batch(
@@ -378,12 +388,62 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         assert policy.kernel_strategy == "serial"
         self.configure_system(context.system_dims, context.n_clbits)
         with self._execution_scope(policy):
-            return _run_shot_batch(
-                self,
-                payload.plan,
-                seed_batch,
-                initial_state,
+            return self._run_shot_batch(
+                payload.plan, context, seed_batch, initial_state
             )
+
+    def _run_per_shot(
+        self,
+        plan: Sequence[ResolvedStep],
+        context: ExecutionContext,
+        initial_state: InitialEvolutionState[QuantumDataT],
+        *,
+        state_requested: bool,
+    ) -> np.ndarray | None:
+        """Assign local trajectory streams and return requested classical samples."""
+        n_iters = context.shots if context.request.counts else int(state_requested)
+        snapshots = self._run_shot_batch(
+            plan,
+            context,
+            np.random.SeedSequence(context.seed).spawn(n_iters),
+            initial_state,
+        )
+        if not context.request.counts:
+            return None
+        return np.asarray(snapshots, dtype=int).reshape(
+            (len(snapshots), context.n_clbits)
+        )
+
+    def _run_shot_batch(
+        self,
+        plan: Sequence[ResolvedStep],
+        context: ExecutionContext,
+        seed_sequences: Sequence[np.random.SeedSequence],
+        initial_state: InitialEvolutionState[QuantumDataT],
+    ) -> list[tuple[int, ...]]:
+        """Initialize each trajectory within the caller's active runtime scope.
+
+        Local and process entries share this lifecycle. The workflow borrows the
+        current classical container; the engine retains quantum storage and caches.
+        """
+        snapshots = []
+        for seed_sequence in seed_sequences:
+            self.initialize(
+                context.system_dims,
+                context.n_clbits,
+                initial_state=initial_state,
+            )
+            assert self._evolution_state is not None
+            snapshots.append(
+                _run_one_shot(
+                    self,
+                    plan,
+                    self._evolution_state.classical,
+                    context,
+                    np.random.default_rng(seed_sequence),
+                )
+            )
+        return snapshots
 
     @abstractmethod
     def measure_subsystems(

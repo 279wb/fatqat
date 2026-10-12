@@ -1,14 +1,15 @@
 """Shared Python state and operator sequencing for matrix-family numerical runtimes.
 
-Functions receive matrix engines, which supply numerical operations
-and evolving state. The workflow owns step sequencing, classical updates, and
-random-stream coordination for single-evolution, per-shot, and operator execution.
+Functions receive numerical operations and explicit classical execution data.
+Quantum storage, initialization, and export stay with the engine; no workflow
+inspects or converts a quantum array. NumPy is used only for host-side random
+draws and classical results, including when operations use device storage.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, NamedTuple
+from typing import NamedTuple, Protocol
 
 import numpy as np
 
@@ -21,14 +22,9 @@ from ...._backends.steps import (
     ResetStep,
     ResolvedStep,
 )
-from ....result import _decode_engine_indices_to_clbit_rows, reduce_to_counts
-from ..._execution_contract import (
-    _ResultRequest as ResultRequest,
-    RawResult,
-    _InitialEvolutionState as InitialEvolutionState,
-    _ExecutionContext as ExecutionContext,
-)
-from ..state import QuantumDataT
+from ....result import _decode_engine_indices_to_clbit_rows
+from ..._execution_contract import _ExecutionContext as ExecutionContext
+from ..state import ClassicalState
 from ._reporting import (
     ERASURE_DIGIT,
     _apply_measurement_reporting,
@@ -37,8 +33,35 @@ from ._reporting import (
     _reporting_by_clbit,
 )
 
-if TYPE_CHECKING:
-    from ..engines.base import MatrixEngine
+
+class _PythonOperations(Protocol):
+    """Numerical operations needed by Python sequencing, supplied by the engine.
+
+    This is a structural typing contract, not a wrapper or a runtime dispatcher.
+    Operations retain quantum storage in its native runtime. Sampling and
+    measurement return host outcomes ready for classical decoding/feedforward;
+    readiness and any required device transfers belong to the implementation.
+    """
+
+    def apply(self, step: ApplyMatrixStep) -> None: ...
+
+    def apply_channel(
+        self, step: ApplyChannelStep, rng: np.random.Generator
+    ) -> None: ...
+
+    def reset_subsystems(
+        self, indices: Sequence[int], rng: np.random.Generator
+    ) -> None: ...
+
+    def measure_subsystems(
+        self, indices: Sequence[int], rng: np.random.Generator
+    ) -> tuple[int, ...]: ...
+
+    def collapse(
+        self, measured_subsystems: Sequence[int], rng: np.random.Generator
+    ) -> int: ...
+
+    def sample_indices(self, shots: int, rng: np.random.Generator) -> np.ndarray: ...
 
 
 class _PreparedPythonExecution(NamedTuple):
@@ -63,166 +86,105 @@ def _condition_matches(
 
 
 def _run_single_pass(
-    engine: MatrixEngine[QuantumDataT],
+    operations: _PythonOperations,
     plan: Sequence[ResolvedStep],
     measurements: Sequence[tuple[int, int]],
-    shots: int,
+    classical: ClassicalState,
+    context: ExecutionContext,
     rng: np.random.Generator,
-    request: ResultRequest,
-    initial_state: InitialEvolutionState[QuantumDataT],
-) -> RawResult[QuantumDataT]:
-    """Evolve once, optionally sample counts, optionally export the state.
+    *,
+    state_requested: bool,
+) -> np.ndarray | None:
+    """Evolve initialized storage once and return requested classical samples.
 
     The ``ResetStep`` and ``ApplyChannelStep`` branches are only reachable
     under density-matrix semantics, where both are deterministic channels;
     statevector semantics routes every plan bearing them to the dynamic
     path.
     """
-    state_requested = getattr(request, engine._state_field)
-    engine.initialize(
-        engine._dims,
-        engine._n_clbits,
-        initial_state=initial_state,
-    )
     for step in plan:
         if isinstance(step, ApplyMatrixStep):
-            engine.apply(step)
+            operations.apply(step)
         elif isinstance(step, ApplyChannelStep):
-            engine.apply_channel(step, rng)
+            operations.apply_channel(step, rng)
         elif isinstance(step, ResetStep):
-            engine.reset_subsystems(step.reset_indices, rng)
+            operations.reset_subsystems(step.reset_indices, rng)
 
     collapsed_index: int | None = None
     if state_requested and measurements:
-        collapsed_index = engine.collapse([q for q, _ in measurements], rng)
+        collapsed_index = operations.collapse([q for q, _ in measurements], rng)
 
-    outcome_keys = outcome_counts = state = None
-    if request.counts:
+    rows = None
+    if context.request.counts:
         if not measurements:
-            indices = np.zeros(shots, dtype=int)
+            indices = np.zeros(context.shots, dtype=int)
         elif collapsed_index is not None:
             indices = np.array([collapsed_index], dtype=int)
         else:
-            indices = engine.sample_indices(shots, rng)
+            indices = operations.sample_indices(context.shots, rng)
         rows = _decode_engine_indices_to_clbit_rows(
-            indices, measurements, engine._dims, engine._n_clbits
+            indices, measurements, context.system_dims, context.n_clbits
         )
-        if initial_state.classical.clbits is not None:
+        if classical.clbits is not None:
             written = {clbit for _subsystem, clbit in measurements}
-            for clbit, digit in enumerate(initial_state.classical.clbits):
+            for clbit, digit in enumerate(classical.clbits):
                 if clbit not in written:
                     rows[:, clbit] = digit
         _apply_measurement_reporting(rows, _reporting_by_clbit(plan), rng)
-        outcome_keys, outcome_counts = reduce_to_counts(rows)
-    if state_requested:
-        state = engine.export_state()
-    return RawResult(
-        outcome_keys=outcome_keys, outcome_counts=outcome_counts, state=state
-    )
-
-
-def _run_per_shot(
-    engine: MatrixEngine[QuantumDataT],
-    plan: Sequence[ResolvedStep],
-    context: ExecutionContext,
-    *,
-    initial_state: InitialEvolutionState[QuantumDataT],
-) -> RawResult[QuantumDataT]:
-    """Replay dynamic trajectories locally under an already-resolved policy."""
-    request = context.request
-    state_requested = getattr(request, engine._state_field)
-    n_iters = context.shots if request.counts else (1 if state_requested else 0)
-    snapshots = _run_shot_batch(
-        engine,
-        plan,
-        np.random.SeedSequence(context.seed).spawn(n_iters),
-        initial_state,
-    )
-
-    outcome_keys = outcome_counts = state = None
-    if request.counts:
-        rows = np.asarray(snapshots, dtype=int).reshape(
-            (len(snapshots), engine._n_clbits)
-        )
-        outcome_keys, outcome_counts = reduce_to_counts(rows)
-    if state_requested:
-        state = engine.export_state()
-    return RawResult(
-        outcome_keys=outcome_keys, outcome_counts=outcome_counts, state=state
-    )
-
-
-def _run_shot_batch(
-    engine: MatrixEngine[QuantumDataT],
-    plan: Sequence[ResolvedStep],
-    seed_sequences: Sequence[np.random.SeedSequence],
-    initial_state: InitialEvolutionState[QuantumDataT],
-) -> list[tuple[int, ...]]:
-    snapshots = []
-    for seed_sequence in seed_sequences:
-        engine.initialize(
-            engine._dims,
-            engine._n_clbits,
-            initial_state=initial_state,
-        )
-        snapshots.append(
-            _run_one_shot(engine, plan, np.random.default_rng(seed_sequence))
-        )
-    return snapshots
+    return rows
 
 
 def _run_one_shot(
-    engine: MatrixEngine[QuantumDataT],
+    operations: _PythonOperations,
     plan: Sequence[ResolvedStep],
+    classical: ClassicalState,
+    context: ExecutionContext,
     rng: np.random.Generator,
 ) -> tuple[int, ...]:
     """Run one dynamic-path shot and return its final clbit snapshot.
 
-    Shared by the serial path and `parallel.py`'s worker batches; it touches
-    the state only through the interface methods (reset consumes rng only
-    under statevector semantics).
+    Shared by local and process-worker batches. Quantum state is accessed only
+    through numerical operations (reset consumes rng only under SV semantics).
 
     Classical storage was initialized with the quantum state. Allocate
     report digits only when a measurement or condition needs them.
     """
-    assert engine._evolution_state is not None
-    classical = engine._evolution_state.classical
     clbits = classical.clbits
     occupied = classical.occupied
     for step in plan:
         if clbits is None and (
             isinstance(step, MeasurementStep) or step.condition is not None
         ):
-            clbits = [0] * engine._n_clbits
+            clbits = [0] * context.n_clbits
             classical.clbits = clbits
         if isinstance(step, ApplyMatrixStep) and (
             occupied is None or all(t in occupied for t in step.target_indices)
         ):
             if _condition_matches(step.condition, clbits):
-                engine.apply(step)
+                operations.apply(step)
         elif isinstance(step, ApplyChannelStep) and (
             occupied is None or all(t in occupied for t in step.target_indices)
         ):
             if _condition_matches(step.condition, clbits):
-                engine.apply_channel(step, rng)
+                operations.apply_channel(step, rng)
         elif isinstance(step, LossStep):
             if _condition_matches(step.condition, clbits):
                 if occupied is None:
-                    occupied = set(range(len(engine._dims)))
+                    occupied = set(range(len(context.system_dims)))
                     classical.occupied = occupied
                 for index in step.target_indices:
                     if index in occupied and rng.random() < step.p:
                         occupied.discard(index)
-                        engine.reset_subsystems([index], rng)
+                        operations.reset_subsystems([index], rng)
         elif isinstance(step, PutStep):
             if _condition_matches(step.condition, clbits) and occupied is not None:
                 for index in step.target_indices:
                     if index not in occupied:
                         occupied.add(index)
-                        engine.reset_subsystems([index], rng)
+                        operations.reset_subsystems([index], rng)
         elif isinstance(step, MeasurementStep):
             assert clbits is not None, "measurement requires classical digits"
-            bits = engine.measure_subsystems(step.measured_indices, rng)
+            bits = operations.measure_subsystems(step.measured_indices, rng)
             confusions = step.confusions or (None,) * len(bits)
             maps = step.reported_digit_maps or (None,) * len(bits)
             # The collapse keeps the physical outcome; only its mapped,
@@ -244,17 +206,17 @@ def _run_one_shot(
             if _condition_matches(step.condition, clbits) and (
                 occupied is None or all(t in occupied for t in step.reset_indices)
             ):
-                engine.reset_subsystems(step.reset_indices, rng)
+                operations.reset_subsystems(step.reset_indices, rng)
     # Unwritten report digits are zero even when no register was needed.
-    return tuple(clbits) if clbits is not None else (0,) * engine._n_clbits
+    return tuple(clbits) if clbits is not None else (0,) * context.n_clbits
 
 
 def _run_operator_plan(
-    engine: MatrixEngine[QuantumDataT],
+    operations: _PythonOperations,
     plan: Sequence[ResolvedStep],
     rng: np.random.Generator,
-    request: ResultRequest,
-) -> RawResult[QuantumDataT]:
+) -> None:
+    """Apply an operator plan to already-initialized native storage."""
     for step in plan:
         assert not isinstance(
             step, MeasurementStep
@@ -263,13 +225,10 @@ def _run_operator_plan(
             step.condition is None
         ), "operator execution cannot represent a feedforward condition"
         if isinstance(step, ApplyMatrixStep):
-            engine.apply(step)
+            operations.apply(step)
         elif isinstance(step, ApplyChannelStep):
-            engine.apply_channel(step, rng)
+            operations.apply_channel(step, rng)
         elif isinstance(step, ResetStep):
-            engine.reset_subsystems(step.reset_indices, rng)
+            operations.reset_subsystems(step.reset_indices, rng)
         else:
             raise TypeError(f"unknown resolved execution step {type(step).__name__}")
-
-    state = engine.export_state() if getattr(request, engine._state_field) else None
-    return RawResult(state=state)
