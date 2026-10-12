@@ -101,7 +101,11 @@ def test_engine_support_validates_execution_controls(
     monkeypatch, request_kind, config, match
 ):
     backend = Simulator("SV", runtime="numpy")
-    monkeypatch.setattr(backend._engine, "_supports_process_shots", False)
+    monkeypatch.setattr(
+        backend._engine,
+        "_capabilities",
+        replace(backend._engine.capabilities, supports_process_shots=False),
+    )
     program = fq.Program(1)
     theta = fq.Parameter("theta")
     program.add(ops.RX(theta if request_kind == "sweep" else 0.1), 0)
@@ -148,7 +152,9 @@ def test_engine_classical_support_controls_early_validation(
 ):
     backend = Simulator("SV", runtime="numpy")
     monkeypatch.setattr(
-        backend._engine, "_trajectory_capabilities", _TrajectoryCapabilities()
+        backend._engine,
+        "_capabilities",
+        replace(backend._engine.capabilities, trajectory=_TrajectoryCapabilities()),
     )
     program = fq.Program(1, 1)
     theta = fq.Parameter("theta")
@@ -175,8 +181,11 @@ def test_engine_quantum_support_controls_early_validation(monkeypatch, operation
     quantum = backend._engine.capabilities.quantum
     monkeypatch.setattr(
         backend._engine,
-        "_quantum_capabilities",
-        replace(quantum, supports_nonunitary=False),
+        "_capabilities",
+        replace(
+            backend._engine.capabilities,
+            quantum=replace(quantum, supports_nonunitary=False),
+        ),
     )
     program = fq.Program(1)
     program.add(ops.Reset if operation == "reset" else ops.X, 0)

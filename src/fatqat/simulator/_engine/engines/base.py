@@ -16,9 +16,6 @@ from ..._execution_contract import (
     _InitialEvolutionState as InitialEvolutionState,
     _SimulationConfig as SimulationConfig,
     _EngineCapabilities,
-    _KernelCapabilities,
-    _QuantumCapabilities,
-    _TrajectoryCapabilities,
     _ExecutionContext as ExecutionContext,
 )
 from ...._backends.steps import (
@@ -54,10 +51,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
     """
 
     # Concrete engines declare all support; numeric/execution helpers may be shared.
-    _quantum_capabilities: _QuantumCapabilities
-    _trajectory_capabilities: _TrajectoryCapabilities
-    _kernel_capabilities: _KernelCapabilities
-    _supports_process_shots: bool = False
+    _capabilities: _EngineCapabilities
 
     def __init__(self, name: str):
         self.name = name
@@ -104,17 +98,12 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
     @property
     def _state_field(self) -> str:
         """Use the declared representation for evolving state and results."""
-        return self._quantum_capabilities.representation
+        return self.capabilities.quantum.representation
 
     @property
     def capabilities(self) -> _EngineCapabilities:
         """Return supported quantum, classical, and numerical execution."""
-        return _EngineCapabilities(
-            quantum=self._quantum_capabilities,
-            trajectory=self._trajectory_capabilities,
-            kernels=self._kernel_capabilities,
-            supports_process_shots=self._supports_process_shots,
-        )
+        return self._capabilities
 
     @abstractmethod
     def _select_workflow(

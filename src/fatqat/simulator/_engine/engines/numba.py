@@ -98,6 +98,7 @@ from ..._execution_contract import (
     _SimulationConfig as SimulationConfig,
     _ExecutionContext as ExecutionContext,
     _KernelCapabilities,
+    _EngineCapabilities,
     _QuantumCapabilities,
     _TrajectoryCapabilities,
 )
@@ -173,17 +174,17 @@ class _PreparedSVExecution(NamedTuple):
 class NumbaSVEngine(NumpySVEngine):
     """State-vector engine with Numba-jitted numeric kernels."""
 
-    _quantum_capabilities = _QuantumCapabilities(
-        "statevector", supports_nonunitary=True, nonunitary_is_stochastic=True
-    )
-    _trajectory_capabilities = _TrajectoryCapabilities(
-        classical_register=True, occupancy=True
-    )
-    _supports_process_shots = True
-    _kernel_capabilities = _KernelCapabilities(
-        supports_kernel_threads=True,
-        thread_capacity=_MAX_THREADS,
-        supports_fusion=False,
+    _capabilities = _EngineCapabilities(
+        quantum=_QuantumCapabilities(
+            "statevector", supports_nonunitary=True, nonunitary_is_stochastic=True
+        ),
+        trajectory=_TrajectoryCapabilities(classical_register=True, occupancy=True),
+        kernels=_KernelCapabilities(
+            supports_kernel_threads=True,
+            thread_capacity=_MAX_THREADS,
+            supports_fusion=False,
+        ),
+        supports_process_shots=True,
     )
 
     def _select_workflow(
@@ -477,15 +478,17 @@ class NumbaDMEngine(NumpyDMEngine):
     per plan step, key-aware for gates, content-scanned for channels.
     """
 
-    _quantum_capabilities = _QuantumCapabilities(
-        "density_matrix", supports_nonunitary=True, nonunitary_is_stochastic=False
-    )
-    _trajectory_capabilities = _TrajectoryCapabilities(
-        classical_register=True, occupancy=True
-    )
-    _supports_process_shots = True
-    _kernel_capabilities = _KernelCapabilities(
-        supports_kernel_threads=True, thread_capacity=_MAX_THREADS, supports_fusion=True
+    _capabilities = _EngineCapabilities(
+        quantum=_QuantumCapabilities(
+            "density_matrix", supports_nonunitary=True, nonunitary_is_stochastic=False
+        ),
+        trajectory=_TrajectoryCapabilities(classical_register=True, occupancy=True),
+        kernels=_KernelCapabilities(
+            supports_kernel_threads=True,
+            thread_capacity=_MAX_THREADS,
+            supports_fusion=True,
+        ),
+        supports_process_shots=True,
     )
 
     def __init__(self, name: str = "numba-dm"):
@@ -800,16 +803,20 @@ class NumbaUnitaryEngine(  # pylint: disable=too-many-ancestors
     the plain system dims; every step is a gate.
     """
 
-    _quantum_capabilities = _QuantumCapabilities(
-        # Retain the SV branch classification; non-unitary plans are rejected.
-        "unitary",
-        supports_nonunitary=False,
-        nonunitary_is_stochastic=True,
-    )
-    _trajectory_capabilities = _TrajectoryCapabilities()
-    _supports_process_shots = False
-    _kernel_capabilities = _KernelCapabilities(
-        supports_kernel_threads=True, thread_capacity=_MAX_THREADS, supports_fusion=True
+    _capabilities = _EngineCapabilities(
+        quantum=_QuantumCapabilities(
+            # Retain the SV branch classification; non-unitary plans are rejected.
+            "unitary",
+            supports_nonunitary=False,
+            nonunitary_is_stochastic=True,
+        ),
+        trajectory=_TrajectoryCapabilities(),
+        kernels=_KernelCapabilities(
+            supports_kernel_threads=True,
+            thread_capacity=_MAX_THREADS,
+            supports_fusion=True,
+        ),
+        supports_process_shots=False,
     )
 
     def __init__(self, name: str = "numba-unitary"):
@@ -876,13 +883,17 @@ class NumbaSuperopEngine(  # pylint: disable=too-many-ancestors
     resolves to one super-operator on the combined ket+bra super-target.
     """
 
-    _quantum_capabilities = _QuantumCapabilities(
-        "superop", supports_nonunitary=True, nonunitary_is_stochastic=False
-    )
-    _trajectory_capabilities = _TrajectoryCapabilities()
-    _supports_process_shots = False
-    _kernel_capabilities = _KernelCapabilities(
-        supports_kernel_threads=True, thread_capacity=_MAX_THREADS, supports_fusion=True
+    _capabilities = _EngineCapabilities(
+        quantum=_QuantumCapabilities(
+            "superop", supports_nonunitary=True, nonunitary_is_stochastic=False
+        ),
+        trajectory=_TrajectoryCapabilities(),
+        kernels=_KernelCapabilities(
+            supports_kernel_threads=True,
+            thread_capacity=_MAX_THREADS,
+            supports_fusion=True,
+        ),
+        supports_process_shots=False,
     )
 
     def __init__(self, name: str = "numba-superop"):

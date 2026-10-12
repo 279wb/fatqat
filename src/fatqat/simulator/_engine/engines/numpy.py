@@ -68,6 +68,7 @@ from ..._execution_contract import (
     _InitialEvolutionState as InitialEvolutionState,
     _SimulationConfig as SimulationConfig,
     _KernelCapabilities,
+    _EngineCapabilities,
     _QuantumCapabilities,
     _TrajectoryCapabilities,
 )
@@ -198,15 +199,15 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
 class NumpySVEngine(_NumpyMatrixEngine):
     """State-vector engine: evolves ``|psi>`` as a flat little-endian array."""
 
-    _quantum_capabilities = _QuantumCapabilities(
-        "statevector", supports_nonunitary=True, nonunitary_is_stochastic=True
-    )
-    _trajectory_capabilities = _TrajectoryCapabilities(
-        classical_register=True, occupancy=True
-    )
-    _supports_process_shots = True
-    _kernel_capabilities = _KernelCapabilities(
-        supports_kernel_threads=False, thread_capacity=1, supports_fusion=False
+    _capabilities = _EngineCapabilities(
+        quantum=_QuantumCapabilities(
+            "statevector", supports_nonunitary=True, nonunitary_is_stochastic=True
+        ),
+        trajectory=_TrajectoryCapabilities(classical_register=True, occupancy=True),
+        kernels=_KernelCapabilities(
+            supports_kernel_threads=False, thread_capacity=1, supports_fusion=False
+        ),
+        supports_process_shots=True,
     )
 
     def __init__(self, name: str = "numpy-sv"):
@@ -295,15 +296,15 @@ class NumpySVEngine(_NumpyMatrixEngine):
 class NumpyDMEngine(_NumpyMatrixEngine):
     """Density-matrix engine: evolves ``rho`` as a ``(size, size)`` matrix."""
 
-    _quantum_capabilities = _QuantumCapabilities(
-        "density_matrix", supports_nonunitary=True, nonunitary_is_stochastic=False
-    )
-    _trajectory_capabilities = _TrajectoryCapabilities(
-        classical_register=True, occupancy=True
-    )
-    _supports_process_shots = True
-    _kernel_capabilities = _KernelCapabilities(
-        supports_kernel_threads=False, thread_capacity=1, supports_fusion=False
+    _capabilities = _EngineCapabilities(
+        quantum=_QuantumCapabilities(
+            "density_matrix", supports_nonunitary=True, nonunitary_is_stochastic=False
+        ),
+        trajectory=_TrajectoryCapabilities(classical_register=True, occupancy=True),
+        kernels=_KernelCapabilities(
+            supports_kernel_threads=False, thread_capacity=1, supports_fusion=False
+        ),
+        supports_process_shots=True,
     )
 
     def __init__(self, name: str = "numpy-dm"):
@@ -407,16 +408,18 @@ class NumpyUnitaryEngine(  # pylint: disable=abstract-method
     the statevector kernel run on ``size`` columns at once.
     """
 
-    _quantum_capabilities = _QuantumCapabilities(
-        # Retain the SV branch classification; non-unitary plans are rejected.
-        "unitary",
-        supports_nonunitary=False,
-        nonunitary_is_stochastic=True,
-    )
-    _trajectory_capabilities = _TrajectoryCapabilities()
-    _supports_process_shots = False
-    _kernel_capabilities = _KernelCapabilities(
-        supports_kernel_threads=False, thread_capacity=1, supports_fusion=False
+    _capabilities = _EngineCapabilities(
+        quantum=_QuantumCapabilities(
+            # Retain the SV branch classification; non-unitary plans are rejected.
+            "unitary",
+            supports_nonunitary=False,
+            nonunitary_is_stochastic=True,
+        ),
+        trajectory=_TrajectoryCapabilities(),
+        kernels=_KernelCapabilities(
+            supports_kernel_threads=False, thread_capacity=1, supports_fusion=False
+        ),
+        supports_process_shots=False,
     )
 
     def __init__(self, name: str = "numpy-unitary"):
@@ -445,13 +448,15 @@ class NumpySuperopEngine(  # pylint: disable=abstract-method
     convention.
     """
 
-    _quantum_capabilities = _QuantumCapabilities(
-        "superop", supports_nonunitary=True, nonunitary_is_stochastic=False
-    )
-    _trajectory_capabilities = _TrajectoryCapabilities()
-    _supports_process_shots = False
-    _kernel_capabilities = _KernelCapabilities(
-        supports_kernel_threads=False, thread_capacity=1, supports_fusion=False
+    _capabilities = _EngineCapabilities(
+        quantum=_QuantumCapabilities(
+            "superop", supports_nonunitary=True, nonunitary_is_stochastic=False
+        ),
+        trajectory=_TrajectoryCapabilities(),
+        kernels=_KernelCapabilities(
+            supports_kernel_threads=False, thread_capacity=1, supports_fusion=False
+        ),
+        supports_process_shots=False,
     )
 
     def __init__(self, name: str = "numpy-superop"):

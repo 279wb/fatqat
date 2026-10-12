@@ -324,8 +324,11 @@ def test_engine_without_occupancy_accepts_only_implicit_occupancy(monkeypatch):
     trajectory = backend._engine.capabilities.trajectory
     monkeypatch.setattr(
         backend._engine,
-        "_trajectory_capabilities",
-        replace(trajectory, occupancy=False),
+        "_capabilities",
+        replace(
+            backend._engine.capabilities,
+            trajectory=replace(trajectory, occupancy=False),
+        ),
     )
     program = Program(1, 1)
     program.measure(0, 0)

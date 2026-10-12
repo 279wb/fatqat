@@ -1,3 +1,4 @@
+from dataclasses import replace
 from functools import partial
 from threading import Lock
 
@@ -43,7 +44,9 @@ def test_real_process_shots_return_counts_with_serial_children():
 
 def test_auto_execution_without_process_support():
     class LocalEngine(NumpySVEngine):
-        _supports_process_shots = False
+        _capabilities = replace(
+            NumpySVEngine().capabilities, supports_process_shots=False
+        )
 
         def _process_engine_factory(self):
             raise RuntimeError("this runtime cannot create process workers")
