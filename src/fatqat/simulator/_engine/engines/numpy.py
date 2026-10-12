@@ -1,19 +1,18 @@
 """NumPy engines for the matrix backend family.
 
 `NumpySVEngine` (statevector) and `NumpyDMEngine` (density matrix) are the
-two *state* `MatrixEngine` implementations. They share one-time plan
-materialization, the fast single-evolution path, local per-shot
-replay, ``initialize``, and ``measure_subsystems`` through
-`_NumpyMatrixEngine`. Each leaf class contributes only its numeric kernels
-(allocate / apply / probabilities / collapse / reset) and explicit capabilities;
-simulator-owned facts decide the semantic execution shape before this layer.
+two *state* `MatrixEngine` implementations. `MatrixEngine` owns shared plan
+materialization and Python execution; `_NumpyMatrixEngine` supplies NumPy
+initialization, sampling, expectations, and measurement decoding. Each leaf
+contributes its numerical operations and explicit capabilities. Engine-owned
+selection determines the semantic execution shape.
 
 `NumpyUnitaryEngine` and `NumpySuperopEngine` are the two *operator* engines:
 they compute the program's map rather than a state under it. Each is its state
 twin evolved on many columns at once - a unitary is ``size`` statevector
 columns (column ``j`` is ``U|j>``), a super-operator is ``size**2``
 density-matrix columns (column ``b`` is the image of basis matrix ``E_b``).
-`_NumpyOperatorEngine` specializes local execution as one deterministic pass.
+`_NumpyOperatorEngine` rejects sampling; shared execution selects the operator pass.
 
 Conventions:
 
@@ -59,18 +58,14 @@ Semantics differences:
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Callable, Sequence
-from functools import partial
+from collections.abc import Sequence
 from math import prod
-from typing import Literal, NamedTuple
 
 import numpy as np
 
 from ...._expectation import expectation_density_matrix, expectation_statevector
 from ..._execution_contract import (
-    RawResult,
     _InitialEvolutionState as InitialEvolutionState,
-    _ExecutionContext as ExecutionContext,
     _KernelCapabilities,
     _QuantumCapabilities,
     _TrajectoryCapabilities,
@@ -78,17 +73,9 @@ from ..._execution_contract import (
 from ...._backends.steps import (
     ApplyChannelStep,
     ApplyMatrixStep,
-    LossStep,
-    MeasurementStep,
-    ResetStep,
-    PutStep,
     ResolvedStep,
 )
-from ....result import reduce_to_counts
-from .._execution_policy import (
-    _ExecutionPolicy as ExecutionPolicy,
-    _materialization_policy,
-)
+from .._execution_policy import _ExecutionPolicy as ExecutionPolicy
 from ..base import MatrixEngine
 from ..numerics.numpy import (
     _ChannelRouteCache,
@@ -112,36 +99,16 @@ from ..numerics.numpy import (
     _statevector_probabilities,
     _sample_unitary,
 )
-from ..parallel import _run_shots_in_processes
 from ..state import ClassicalState, EvolutionState, QuantumState
-from ..workflows.python import (
-    _run_operator_plan,
-    _run_single_pass,
-    _run_per_shot,
-    _run_shot_batch,
-)
 
-# --- shared orchestration ---
-
-
-class _PreparedPythonExecution(NamedTuple):
-    """Effective plan and deferred measurements for Python-driven execution.
-
-    Retains the prepared plan without copying steps or numerical arrays. Numba
-    engines carry this same record alongside their runtime-specific preparation.
-    """
-
-    plan: tuple[ResolvedStep, ...]
-    deferred_measurements: tuple[tuple[int, int], ...]
+# --- shared NumPy operations ---
 
 
 class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
-    """Semantics-agnostic execution for the NumPy matrix-family engines.
+    """NumPy allocation, sampling, measurement decoding, and expectations.
 
-    Owns local materialization and semantic execution through abstract kernels.
-    Subclasses supply ``_allocate``, ``apply``, ``apply_channel``,
-    ``probabilities``, ``collapse``, ``reset_subsystems`` and their
-    capability declarations. The quantum representation names the result field.
+    Shared plan preparation and workflow invocation come from ``MatrixEngine``.
+    Subclasses supply representation-specific numerical operations.
     """
 
     def initialize(
@@ -198,15 +165,6 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
     def _allocate(self, size: int, initial_state: np.ndarray | None) -> np.ndarray:
         """Return a fresh owned state over ``size`` basis states."""
 
-    @abstractmethod
-    def apply_channel(self, step: ApplyChannelStep, rng: np.random.Generator) -> None:
-        """Apply a Kraus channel to the internal state in place.
-
-        Consumes ``rng`` only under statevector semantics (one draw to sample
-        the trajectory branch); the density-matrix kernel is deterministic
-        and accepts it for interface parity, like reset.
-        """
-
     def measure_subsystems(
         self, indices: Sequence[int], rng: np.random.Generator
     ) -> tuple[int, ...]:
@@ -214,165 +172,9 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
         flat = self.collapse(indices, rng)
         return tuple(_digit(flat, index, self._dims) for index in indices)
 
-    def _select_execution_path(
-        self,
-        plan: Sequence[ResolvedStep],
-        *,
-        initial_state: InitialEvolutionState[np.ndarray],
-    ) -> Literal["operator", "single_pass", "per_shot"]:
-        quantum = self.capabilities.quantum
-        if quantum.is_operator:
-            return "operator"
-        # Only the trajectory executor handles occupancy and erasure reports.
-        if initial_state.classical.occupied is not None:
-            return "per_shot"
-        measured: set[int] = set()
-        for step in plan:
-            if getattr(step, "condition", None) is not None or isinstance(
-                step, (PutStep, LossStep)
-            ):
-                return "per_shot"
-            if isinstance(step, MeasurementStep):
-                if measured.intersection(step.measured_indices):
-                    return "per_shot"
-                measured.update(step.measured_indices)
-                continue
-            if isinstance(step, ResetStep):
-                targets = step.reset_indices
-            else:
-                targets = step.target_indices
-            if (
-                isinstance(step, (ResetStep, ApplyChannelStep))
-                and quantum.nonunitary_is_stochastic
-            ):
-                return "per_shot"
-            if measured.intersection(targets):
-                return "per_shot"
-        return "single_pass"
-
-    def materialize_execution(
-        self,
-        plan: tuple[ResolvedStep, ...],
-        *,
-        system_dims: tuple[int, ...],
-        n_clbits: int,
-        policy: ExecutionPolicy,
-    ) -> _PreparedPythonExecution:
-        """Retain the canonical plan and finalized deferred measurements."""
-        self.configure_system(system_dims, n_clbits)
-        self._retain_step_caches(plan)
-        measurements = (
-            tuple(
-                pair
-                for step in plan
-                if isinstance(step, MeasurementStep)
-                for pair in zip(step.measured_indices, step.classical_indices)
-            )
-            if policy.execution_path == "single_pass"
-            else ()
-        )
-        return _PreparedPythonExecution(plan, measurements)
-
-    def _retain_step_caches(self, plan: tuple[ResolvedStep, ...]) -> None:
-        """Retain only the effective plan's identity-keyed step resolutions.
-
-        Materialization calls this before resolving or compiling the plan.
-        Shot initialization leaves these entries intact for trajectory reuse.
-        Engines without step caches have nothing to prune.
-        """
-
     def sample_indices(self, shots: int, rng: np.random.Generator) -> np.ndarray:
         """Sample flat basis-state indices from the NumPy quantum buffer."""
         return rng.choice(self.state.shape[0], size=shots, p=self.probabilities())
-
-    def execute(
-        self,
-        plan: tuple[ResolvedStep, ...],
-        *,
-        context: ExecutionContext,
-        policy: ExecutionPolicy,
-        initial_state: InitialEvolutionState[np.ndarray],
-    ) -> RawResult[np.ndarray]:
-        """Materialize and dispatch a plan through local or CPU process execution."""
-        payload = self.materialize_execution(
-            plan,
-            system_dims=context.system_dims,
-            n_clbits=context.n_clbits,
-            policy=_materialization_policy(policy),
-        )
-        if policy.shot_strategy in ("none", "serial", "threads"):
-            return self.execute_local(
-                context, payload, policy, initial_state=initial_state
-            )
-
-        if policy.shot_strategy != "processes":
-            raise RuntimeError(f"Unknown shot strategy: {policy.shot_strategy!r}")
-        snapshots = _run_shots_in_processes(
-            self._process_engine_factory(), context, payload, policy, initial_state
-        )
-        rows = np.asarray(snapshots, dtype=int).reshape(
-            (len(snapshots), context.n_clbits)
-        )
-        outcome_keys, outcome_counts = reduce_to_counts(rows)
-        return RawResult(
-            outcome_keys=outcome_keys,
-            outcome_counts=outcome_counts,
-        )
-
-    def _process_engine_factory(self) -> Callable[[], MatrixEngine[np.ndarray]]:
-        """Carry constructor configuration to workers without live execution state.
-
-        Engines with additional constructor options override this hook.
-        """
-        return partial(type(self), name=self.name)
-
-    def execute_local(
-        self,
-        context: ExecutionContext,
-        payload: _PreparedPythonExecution,
-        policy: ExecutionPolicy,
-        *,
-        initial_state: InitialEvolutionState[np.ndarray],
-    ) -> RawResult[np.ndarray]:
-        """Execute one materialized state plan without dispatching."""
-        assert policy.shot_strategy != "processes"
-        self.configure_system(context.system_dims, context.n_clbits)
-        with self._execution_scope(policy):
-            if policy.execution_path == "per_shot":
-                return _run_per_shot(
-                    self, payload.plan, context, initial_state=initial_state
-                )
-            assert policy.execution_path == "single_pass"
-            return _run_single_pass(
-                self,
-                payload.plan,
-                payload.deferred_measurements,
-                context.shots,
-                np.random.default_rng(context.seed),
-                context.request,
-                initial_state,
-            )
-
-    def execute_shot_batch(
-        self,
-        context: ExecutionContext,
-        payload: _PreparedPythonExecution,
-        seed_batch: list[np.random.SeedSequence],
-        policy: ExecutionPolicy,
-        *,
-        initial_state: InitialEvolutionState[np.ndarray],
-    ) -> list[tuple[int, ...]]:
-        """Non-dispatching worker entry for one ordered batch of shots."""
-        assert policy.shot_strategy == "serial"
-        assert policy.kernel_strategy == "serial"
-        self.configure_system(context.system_dims, context.n_clbits)
-        with self._execution_scope(policy):
-            return _run_shot_batch(
-                self,
-                payload.plan,
-                seed_batch,
-                initial_state,
-            )
 
 
 # --- statevector engine ---
@@ -557,33 +359,11 @@ class NumpyDMEngine(_NumpyMatrixEngine):
 
 
 class _NumpyOperatorEngine(_NumpyMatrixEngine):
-    """Deterministic single-pass execution for the operator representations.
+    """Sampling rejection for NumPy operator representations.
 
-    Replaces `_NumpyMatrixEngine`'s fast/per-shot split with one evolution of
-    the identity operator; the sampling kernels are unsupported.
+    ``MatrixEngine`` runs their deterministic Python operator workflow;
+    the concrete engines supply operator allocation and numerical operations.
     """
-
-    def execute_local(
-        self,
-        context: ExecutionContext,
-        payload: _PreparedPythonExecution,
-        policy: ExecutionPolicy,
-        *,
-        initial_state: InitialEvolutionState[np.ndarray],
-    ) -> RawResult[np.ndarray]:
-        """Evolve one already-materialized operator plan in this process."""
-        assert policy.shot_strategy == "none"
-        assert policy.execution_path == "operator"
-        self.configure_system(context.system_dims, context.n_clbits)
-        with self._execution_scope(policy):
-            self.initialize(
-                self._dims,
-                self._n_clbits,
-                initial_state=initial_state,
-            )
-            rng = np.random.default_rng(context.seed)
-            request = context.request
-            return _run_operator_plan(self, payload.plan, rng, request)
 
     def probabilities(self) -> np.ndarray:
         """Unsupported: an operator is a map, not a distribution over states."""

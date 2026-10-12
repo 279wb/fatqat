@@ -1,8 +1,8 @@
 """Numba matrix-family engines.
 
 `NumbaSVEngine` (statevector) and `NumbaDMEngine` (density matrix) reuse
-the static capability reporting, materialization, local execution, and
-``initialize`` / ``measure_subsystems`` orchestration of their NumPy twins,
+shared materialization and Python execution from ``MatrixEngine`` and
+``initialize`` / ``measure_subsystems`` operations from their NumPy twins,
 while replacing numeric kernels with Numba-jitted loops. `NumbaUnitaryEngine`
 and `NumbaSuperopEngine` then reuse *those* kernels for the operator
 representations, overriding only the apply plan (see the operator-engine
@@ -140,12 +140,12 @@ from ..numerics.numba._preparation import (
 )
 from .numpy import (
     _NumpyOperatorEngine,
-    _PreparedPythonExecution,
     NumpyDMEngine,
     NumpySuperopEngine,
     NumpySVEngine,
     NumpyUnitaryEngine,
 )
+from ..workflows.python import _PreparedPythonExecution
 from ..workflows.numba.operators import (
     _operator_chunks,
     _pack_operator_plan,
@@ -184,7 +184,7 @@ class NumbaSVEngine(NumpySVEngine):
         supports_fusion=False,
     )
 
-    def compiled_multi_shot_compatible(self, plan: Sequence[ResolvedStep]) -> bool:
+    def _compiled_multi_shot_compatible(self, plan: Sequence[ResolvedStep]) -> bool:
         """Return whether the compiled outer loop can encode this exact plan."""
         return _plan_compilable(plan)
 

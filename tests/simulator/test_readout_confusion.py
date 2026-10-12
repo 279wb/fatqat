@@ -249,7 +249,7 @@ def test_numba_compiled_multi_shot_kernel_applies_readout_confusion():
     program.add(ops.Reset, 0)  # a reset forces the dynamic path
 
     plan, _ = Simulator(noise=noise)._lower_program(program)
-    assert NumbaSVEngine().compiled_multi_shot_compatible(plan) is True
+    assert NumbaSVEngine()._compiled_multi_shot_compatible(plan) is True
 
     counts = {}
     for runtime in ("numpy", "numba"):

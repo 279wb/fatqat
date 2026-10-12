@@ -74,8 +74,8 @@ def test_numba_compiled_multi_shot_compatibility():
     unsupported = compatible + (LossStep((0,), p=0.1),)
     engine = nb.NumbaSVEngine()
 
-    assert engine.compiled_multi_shot_compatible(compatible) is True
-    assert engine.compiled_multi_shot_compatible(unsupported) is False
+    assert engine._compiled_multi_shot_compatible(compatible) is True
+    assert engine._compiled_multi_shot_compatible(unsupported) is False
 
 
 def test_engine_fast_counts_returns_arrays():

@@ -8,6 +8,7 @@ random-stream coordination for single-evolution, per-shot, and operator executio
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 
@@ -27,6 +28,7 @@ from ..._execution_contract import (
     _InitialEvolutionState as InitialEvolutionState,
     _ExecutionContext as ExecutionContext,
 )
+from ..state import QuantumDataT
 from ._reporting import (
     ERASURE_DIGIT,
     _apply_measurement_reporting,
@@ -34,6 +36,20 @@ from ._reporting import (
     _report_digit,
     _reporting_by_clbit,
 )
+
+if TYPE_CHECKING:
+    from ..base import MatrixEngine
+
+
+class _PreparedPythonExecution(NamedTuple):
+    """Effective plan and deferred measurements for Python-driven execution.
+
+    Retains the prepared plan without copying steps or numerical arrays. Numba
+    engines carry this same record alongside their runtime-specific preparation.
+    """
+
+    plan: tuple[ResolvedStep, ...]
+    deferred_measurements: tuple[tuple[int, int], ...]
 
 
 def _condition_matches(
@@ -47,14 +63,14 @@ def _condition_matches(
 
 
 def _run_single_pass(
-    engine,
+    engine: MatrixEngine[QuantumDataT],
     plan: Sequence[ResolvedStep],
     measurements: Sequence[tuple[int, int]],
     shots: int,
     rng: np.random.Generator,
     request: ResultRequest,
-    initial_state: InitialEvolutionState[np.ndarray],
-) -> RawResult[np.ndarray]:
+    initial_state: InitialEvolutionState[QuantumDataT],
+) -> RawResult[QuantumDataT]:
     """Evolve once, optionally sample counts, optionally export the state.
 
     The ``ResetStep`` and ``ApplyChannelStep`` branches are only reachable
@@ -106,12 +122,12 @@ def _run_single_pass(
 
 
 def _run_per_shot(
-    engine,
+    engine: MatrixEngine[QuantumDataT],
     plan: Sequence[ResolvedStep],
     context: ExecutionContext,
     *,
-    initial_state: InitialEvolutionState[np.ndarray],
-) -> RawResult[np.ndarray]:
+    initial_state: InitialEvolutionState[QuantumDataT],
+) -> RawResult[QuantumDataT]:
     """Replay dynamic trajectories locally under an already-resolved policy."""
     request = context.request
     state_requested = getattr(request, engine._state_field)
@@ -137,10 +153,10 @@ def _run_per_shot(
 
 
 def _run_shot_batch(
-    engine,
+    engine: MatrixEngine[QuantumDataT],
     plan: Sequence[ResolvedStep],
     seed_sequences: Sequence[np.random.SeedSequence],
-    initial_state: InitialEvolutionState[np.ndarray],
+    initial_state: InitialEvolutionState[QuantumDataT],
 ) -> list[tuple[int, ...]]:
     snapshots = []
     for seed_sequence in seed_sequences:
@@ -156,7 +172,7 @@ def _run_shot_batch(
 
 
 def _run_one_shot(
-    engine,
+    engine: MatrixEngine[QuantumDataT],
     plan: Sequence[ResolvedStep],
     rng: np.random.Generator,
 ) -> tuple[int, ...]:
@@ -234,11 +250,11 @@ def _run_one_shot(
 
 
 def _run_operator_plan(
-    engine,
+    engine: MatrixEngine[QuantumDataT],
     plan: Sequence[ResolvedStep],
     rng: np.random.Generator,
     request: ResultRequest,
-) -> RawResult[np.ndarray]:
+) -> RawResult[QuantumDataT]:
     for step in plan:
         assert not isinstance(
             step, MeasurementStep
