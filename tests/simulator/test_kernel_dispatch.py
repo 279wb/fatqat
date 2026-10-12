@@ -21,11 +21,10 @@ numba = pytest.importorskip("numba")
 
 # pylint: disable=wrong-import-position  # these need the importorskip above
 from fatqat.simulator._engine.engines.numba import (
-    _DENSE,
     _fuse_gate_channels,
     NumbaSVEngine,
 )
-from fatqat.simulator._engine.numerics.numba._apply import _classify_matrix
+from fatqat.simulator._engine.numerics.numba._apply import _DENSE, _classify_matrix
 from fatqat.simulator._engine.numerics.numba._preparation import (
     _KERNEL_SPECS,
     _superop_csr,
