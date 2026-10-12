@@ -68,15 +68,33 @@ def _run(
     )
 
 
-def test_numba_compiled_multi_shot_compatibility():
-    from fatqat.simulator._engine.engines import numba as nb
+@pytest.mark.parametrize("with_loss", [False, True])
+def test_numba_trajectory_execution_handles_supported_and_fallback_plans(with_loss):
+    from fatqat.simulator._engine.engines.numba import NumbaSVEngine
 
-    compatible = (MeasurementStep((0,), (0,)), ResetStep((0,)))
-    unsupported = compatible + (LossStep((0,), p=0.1),)
-    engine = nb.NumbaSVEngine()
+    plan = (ResetStep((0,)),)
+    if with_loss:
+        plan += (LossStep((0,), p=1.0),)
+    plan += (MeasurementStep((0,), (0,)),)
+    engine = NumbaSVEngine()
+    initial = _InitialEvolutionState()
+    context = _context(
+        n_clbits=1,
+        shots=4,
+        request=_StateVectorResultRequest(counts=True, statevector=False),
+    )
+    policy = engine.resolve_execution_policy(
+        plan,
+        _SimulationConfig(shot_parallelism="serial", kernel_parallelism="serial"),
+        counts_requested=True,
+        state_requested=False,
+        shots=context.shots,
+        initial_state=initial,
+    )
+    result = engine.execute(plan, context=context, policy=policy, initial_state=initial)
 
-    assert engine._compiled_multi_shot_compatible(compatible) is True
-    assert engine._compiled_multi_shot_compatible(unsupported) is False
+    assert result.outcome_keys.tolist() == [[2 if with_loss else 0]]
+    assert result.outcome_counts.tolist() == [4]
 
 
 def test_engine_fast_counts_returns_arrays():

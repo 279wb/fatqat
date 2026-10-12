@@ -213,14 +213,10 @@ class NumbaSVEngine(NumpySVEngine):
             and counts_requested
             and not state_requested
             and initial_state.classical.occupied is None
-            and self._compiled_multi_shot_compatible(plan)
+            and _plan_compilable(plan)
         ):
             return "numba_trajectories", True
         return "python", False
-
-    def _compiled_multi_shot_compatible(self, plan: Sequence[ResolvedStep]) -> bool:
-        """Return whether the compiled outer loop can encode this exact plan."""
-        return _plan_compilable(plan)
 
     def __init__(self, name: str = "numba-sv"):
         super().__init__(name)
@@ -430,7 +426,7 @@ class NumbaSVEngine(NumpySVEngine):
     ) -> int:
         """Sample one outcome, project onto it in Numba, return the flat index."""
         index = int(_sample_index_kernel(self.probabilities(), float(rng.random())))
-        strides, dims = self._measured_layout(measured_subsystems)
+        strides, dims = _measured_layout(self._dims, measured_subsystems)
         self._state = _sv_project_kernel(
             np.ascontiguousarray(self.state), strides, dims, index
         )
@@ -441,16 +437,10 @@ class NumbaSVEngine(NumpySVEngine):
     ) -> None:
         """Reset a sampled branch to zero using Numba digit shifts and one draw."""
         assert len(indices) >= 1, "reset_subsystems requires at least one index"
-        strides, dims = self._measured_layout(indices)
+        strides, dims = _measured_layout(self._dims, indices)
         self._state = _sv_reset_kernel(
             np.ascontiguousarray(self.state), strides, dims, float(rng.random())
         )
-
-    def _measured_layout(
-        self, subsystems: Sequence[int]
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Flat strides and dimensions of the measured subsystems for the kernel."""
-        return _measured_layout(self._dims, subsystems)
 
 
 # --- density-matrix kernels ---
