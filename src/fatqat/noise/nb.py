@@ -17,7 +17,8 @@ digit is resampled through a column-stochastic confusion matrix
 
 Plus `_compile_channel_table` and `_compile_readout_table`, which flatten a
 plan's channel occurrences and per-measurement confusion matrices into the
-typed arrays the compiled multi-shot kernel in ``simulator._engine.engines.numba`` walks.
+typed arrays the compiled multi-shot loop in
+``simulator._engine.workflows.numba.trajectories`` walks.
 
 Division of labour with ``simulator._engine.engines.numba``, and why it runs this way: *applying*
 a local matrix is representation machinery and stays there (one coset-walk
