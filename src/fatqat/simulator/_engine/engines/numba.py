@@ -88,6 +88,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from math import prod
+from typing import NamedTuple
 
 import numpy as np
 
@@ -603,6 +604,17 @@ class NumbaDMEngine(NumpyDMEngine):
 # never-targeted subsystem prepended to the dims.
 
 
+class _PreparedOperatorExecution(NamedTuple):
+    """Host-side operator preparation; only the packed arrays enter Numba.
+    and exports the requested operator.
+    """
+
+    packed_plan: tuple[np.ndarray, ...] | None
+    scratch_rows: int
+    n_columns: int
+    n_chunks: int
+
+
 class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
     """Compiled whole-plan execution for the Numba operator engines.
 
@@ -621,7 +633,7 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
         system_dims: tuple[int, ...],
         n_clbits: int,
         policy: ExecutionPolicy,
-    ):
+    ) -> _PreparedOperatorExecution:
         """Resolve, optionally fuse, and pack the operator plan once."""
         self.configure_system(system_dims, n_clbits)
         execution_plan = self._operator_execution_plan(plan, policy)
@@ -633,10 +645,10 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
         if policy.fusion and flat_size >= _MIN_SIZE_TO_FUSE:
             payloads = _fuse_operator_payloads(payloads, row_dims)
         if not payloads:
-            return None, 0, n_columns, 1
+            return _PreparedOperatorExecution(None, 0, n_columns, 1)
         packed, scratch_rows = _pack_operator_plan(payloads, row_dims, n_columns)
         n_chunks = _operator_chunks(len(payloads), flat_size, n_columns, policy)
-        return packed, scratch_rows, n_columns, n_chunks
+        return _PreparedOperatorExecution(packed, scratch_rows, n_columns, n_chunks)
 
     def _operator_execution_plan(
         self, plan: tuple[ResolvedStep, ...], policy: ExecutionPolicy
@@ -647,7 +659,7 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
     def execute_local(
         self,
         context: ExecutionContext,
-        payload,
+        payload: _PreparedOperatorExecution,
         policy: ExecutionPolicy,
         *,
         initial_state: InitialEvolutionState[np.ndarray],
@@ -656,22 +668,30 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
         assert policy.shot_strategy == "none"
         assert policy.execution_path == "operator"
         self.configure_system(context.system_dims, context.n_clbits)
-        packed, scratch_rows, n_columns, n_chunks = payload
         with self._execution_scope(policy):
             self.initialize(
                 self._dims,
                 self._n_clbits,
                 initial_state=initial_state,
             )
-            if packed is not None:
+            if payload.packed_plan is not None:
                 operator = np.ascontiguousarray(self.state, dtype=np.complex128)
                 flat = operator.reshape(-1)
-                if n_chunks > 1:
+                if payload.n_chunks > 1:
                     _run_operator_plan_parallel(
-                        flat, n_columns, packed, scratch_rows, n_chunks
+                        flat,
+                        payload.n_columns,
+                        payload.packed_plan,
+                        payload.scratch_rows,
+                        payload.n_chunks,
                     )
                 else:
-                    _run_operator_plan_serial(flat, n_columns, packed, scratch_rows)
+                    _run_operator_plan_serial(
+                        flat,
+                        payload.n_columns,
+                        payload.packed_plan,
+                        payload.scratch_rows,
+                    )
                 self._state = flat.reshape(operator.shape)
             state = (
                 self.export_state()
