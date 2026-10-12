@@ -38,7 +38,7 @@ from ._reporting import (
 )
 
 if TYPE_CHECKING:
-    from ..base import MatrixEngine
+    from ..engines.base import MatrixEngine
 
 
 class _PreparedPythonExecution(NamedTuple):

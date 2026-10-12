@@ -56,7 +56,7 @@ from ..result import (
     _ResultConfig,
     counts_dict_from_arrays,
 )
-from ._engine.base import MatrixEngine
+from ._engine.engines.base import MatrixEngine
 from .._backends.backend_utils import (
     _LoweringContext,
     _canonicalize_method,

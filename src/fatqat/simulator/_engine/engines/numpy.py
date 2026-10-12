@@ -76,7 +76,7 @@ from ...._backends.steps import (
     ResolvedStep,
 )
 from .._execution_policy import _ExecutionPolicy as ExecutionPolicy
-from ..base import MatrixEngine
+from .base import MatrixEngine
 from ..numerics.numpy import (
     _ChannelRouteCache,
     _ResetChannelCache,

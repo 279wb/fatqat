@@ -1,1 +1,1 @@
-"""Concrete matrix-engine assembly; import selected implementations lazily."""
+"""Shared engine contract and concrete engines; load runtimes lazily."""
