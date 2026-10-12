@@ -224,3 +224,4 @@ nav:
       - Errors and stability:
           - Exceptions: api/exceptions.md
           - Experimental APIs: api/experimental.md
+  - How to contribute: contributing.md
