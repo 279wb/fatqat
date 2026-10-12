@@ -160,7 +160,7 @@ from .numpy import (
     NumpySVEngine,
     NumpyUnitaryEngine,
 )
-from ..workflows.numba.trajectories import _run_shots_kernel
+from ..workflows.numba.trajectories import _run_sv_trajectories
 
 # Set by `_pack_operator_plan` for a step whose super-operator resolved to a
 # CSR (`_superop_csr`); `_classify_matrix` never returns it.
@@ -656,7 +656,7 @@ class NumbaSVEngine(NumpySVEngine):
         )
         clbits = initial_state.classical.clbits
         clbits_start = np.asarray(clbits if clbits is not None else (), dtype=np.int64)
-        rows = _run_shots_kernel(
+        rows = _run_sv_trajectories(
             *plan_arrays,
             start,
             state_size,
@@ -675,7 +675,7 @@ class NumbaSVEngine(NumpySVEngine):
         )
 
     def _compile_dynamic_plan(self, plan: list) -> tuple[tuple, int]:
-        """Flatten a plan into typed arrays for `_run_shots_kernel`.
+        """Flatten a plan into typed arrays for `_run_sv_trajectories`.
 
         Reuses the cached per-target apply layout; measurement/reset carry their
         subsystem strides and dims for in-kernel collapse and reset-shift, while

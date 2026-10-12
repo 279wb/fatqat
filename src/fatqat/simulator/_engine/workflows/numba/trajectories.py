@@ -21,7 +21,7 @@ from ...state import NumbaClassicalState, NumbaEvolutionState, NumbaQuantumState
 
 
 @njit(cache=True)
-def _condition_passes(
+def _condition_matches(
     clbits, cond_clbit, cond_value, start, length
 ) -> bool:  # pragma: no cover - compiled by Numba
     """Whether the lowered feedforward condition ``clbits[c] == v`` all hold."""
@@ -32,7 +32,7 @@ def _condition_passes(
 
 
 @njit(cache=True)
-def _apply_step(
+def _apply_matrix_step(
     state,
     a,
     ap_mat_ptr,
@@ -155,7 +155,7 @@ def _initialize_shot_state(start, state_size, custom_start, n_clbits, clbits_sta
 
 
 @njit(cache=True, parallel=True)
-def _run_shots_kernel(
+def _run_sv_trajectories(
     # per-step sequencer (one entry per plan step, in program order)
     step_kind,  # 0=gate, 1=measurement, 2=reset
     step_data,  # row index into this kind's table (gate/measure/reset)
@@ -240,7 +240,7 @@ def _run_shots_kernel(
 
         for st in range(num_steps):
             kind = step_kind[st]
-            passes = _condition_passes(
+            passes = _condition_matches(
                 evolution.classical.clbits,
                 cond_clbit,
                 cond_value,
@@ -266,7 +266,7 @@ def _run_shots_kernel(
                     NumbaQuantumState(quantum), evolution.classical
                 )
             elif kind == 0 and passes:  # gate
-                _apply_step(
+                _apply_matrix_step(
                     evolution.quantum.data,
                     step_data[st],
                     ap_mat_ptr,
