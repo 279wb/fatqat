@@ -140,6 +140,7 @@ from ..numerics.numba._preparation import (
 )
 from .numpy import (
     _NumpyOperatorEngine,
+    _PreparedPythonExecution,
     NumpyDMEngine,
     NumpySuperopEngine,
     NumpySVEngine,
@@ -152,10 +153,19 @@ from ..workflows.numba.operators import (
     _run_operator_plan_serial,
 )
 from ..workflows.numba.trajectories import (
+    _PreparedSVTrajectories,
     _compile_dynamic_plan,
     _execute_sv_trajectories,
     _plan_compilable,
 )
+
+
+class _PreparedSVExecution(NamedTuple):
+    """Python plan, optional compiled trajectories, and reusable SV layouts."""
+
+    python_execution: _PreparedPythonExecution
+    compiled_trajectories: _PreparedSVTrajectories | None
+    apply_plans: tuple[tuple[tuple[int, ...], tuple], ...]
 
 
 class NumbaSVEngine(NumpySVEngine):
@@ -208,14 +218,14 @@ class NumbaSVEngine(NumpySVEngine):
         system_dims: tuple[int, ...],
         n_clbits: int,
         policy: ExecutionPolicy,
-    ):
-        base = super().materialize_execution(
+    ) -> _PreparedSVExecution:
+        python_execution = super().materialize_execution(
             plan,
             system_dims=system_dims,
             n_clbits=n_clbits,
             policy=policy,
         )
-        execution_plan = base[0]
+        execution_plan = python_execution.plan
         targets = {
             tuple(step.target_indices)
             for step in execution_plan
@@ -250,40 +260,46 @@ class NumbaSVEngine(NumpySVEngine):
                 self._build_apply_plan,
                 self._resolve_structure,
             )
-        return (*base, compiled, tuple(self._apply_plans.items()))
+        return _PreparedSVExecution(
+            python_execution, compiled, tuple(self._apply_plans.items())
+        )
 
     def execute_local(
         self,
         context: ExecutionContext,
-        payload,
+        payload: _PreparedSVExecution,
         policy: ExecutionPolicy,
         *,
         initial_state: InitialEvolutionState[np.ndarray],
     ) -> RawResult[np.ndarray]:
         self.configure_system(context.system_dims, context.n_clbits)
-        self._apply_plans = dict(payload[3])
+        self._apply_plans = dict(payload.apply_plans)
         if not policy.use_compiled_multi_shot_kernel:
             return super().execute_local(
-                context, payload, policy, initial_state=initial_state
+                context, payload.python_execution, policy, initial_state=initial_state
             )
         with self._execution_scope(policy):
             return _execute_sv_trajectories(
-                context, payload[2], initial_state=initial_state
+                context, payload.compiled_trajectories, initial_state=initial_state
             )
 
     def execute_shot_batch(
         self,
         context: ExecutionContext,
-        payload,
+        payload: _PreparedSVExecution,
         seed_batch: list[np.random.SeedSequence],
         policy: ExecutionPolicy,
         *,
         initial_state: InitialEvolutionState[np.ndarray],
     ) -> list[tuple[int, ...]]:
         self.configure_system(context.system_dims, context.n_clbits)
-        self._apply_plans = dict(payload[3])
+        self._apply_plans = dict(payload.apply_plans)
         return super().execute_shot_batch(
-            context, payload, seed_batch, policy, initial_state=initial_state
+            context,
+            payload.python_execution,
+            seed_batch,
+            policy,
+            initial_state=initial_state,
         )
 
     def apply(self, step: ApplyMatrixStep) -> None:
@@ -399,6 +415,13 @@ class NumbaSVEngine(NumpySVEngine):
 # --- density-matrix kernels ---
 
 
+class _PreparedDMExecution(NamedTuple):
+    """Effective Python plan and reusable layouts over the doubled DM space."""
+
+    python_execution: _PreparedPythonExecution
+    sandwich_plans: tuple[tuple[tuple[int, ...], tuple], ...]
+
+
 class NumbaDMEngine(NumpyDMEngine):
     """Density-matrix engine with Numba-jitted, key-driven numeric kernels.
 
@@ -454,12 +477,12 @@ class NumbaDMEngine(NumpyDMEngine):
         system_dims: tuple[int, ...],
         n_clbits: int,
         policy: ExecutionPolicy,
-    ):
+    ) -> _PreparedDMExecution:
         """Apply the optional gate/channel rewrite exactly once."""
         execution_plan = (
             tuple(_fuse_gate_channels(list(plan))) if policy.fusion else plan
         )
-        execution_plan, measurements = super().materialize_execution(
+        python_execution = super().materialize_execution(
             execution_plan,
             system_dims=system_dims,
             n_clbits=n_clbits,
@@ -467,7 +490,7 @@ class NumbaDMEngine(NumpyDMEngine):
         )
         targets = {
             tuple(step.target_indices)
-            for step in execution_plan
+            for step in python_execution.plan
             if isinstance(step, (ApplyMatrixStep, ApplyChannelStep))
         }
         workers = _kernel_thread_workers(policy)
@@ -479,39 +502,41 @@ class NumbaDMEngine(NumpyDMEngine):
             )
             for target in targets
         }
-        return (
-            execution_plan,
-            measurements,
-            tuple(self._sandwich_plans.items()),
+        return _PreparedDMExecution(
+            python_execution, tuple(self._sandwich_plans.items())
         )
 
     def execute_local(
         self,
         context: ExecutionContext,
-        payload,
+        payload: _PreparedDMExecution,
         policy: ExecutionPolicy,
         *,
         initial_state: InitialEvolutionState[np.ndarray],
     ) -> RawResult[np.ndarray]:
         self.configure_system(context.system_dims, context.n_clbits)
-        self._sandwich_plans = dict(payload[2])
+        self._sandwich_plans = dict(payload.sandwich_plans)
         return super().execute_local(
-            context, payload, policy, initial_state=initial_state
+            context, payload.python_execution, policy, initial_state=initial_state
         )
 
     def execute_shot_batch(
         self,
         context: ExecutionContext,
-        payload,
+        payload: _PreparedDMExecution,
         seed_batch: list[np.random.SeedSequence],
         policy: ExecutionPolicy,
         *,
         initial_state: InitialEvolutionState[np.ndarray],
     ) -> list[tuple[int, ...]]:
         self.configure_system(context.system_dims, context.n_clbits)
-        self._sandwich_plans = dict(payload[2])
+        self._sandwich_plans = dict(payload.sandwich_plans)
         return super().execute_shot_batch(
-            context, payload, seed_batch, policy, initial_state=initial_state
+            context,
+            payload.python_execution,
+            seed_batch,
+            policy,
+            initial_state=initial_state,
         )
 
     def _sandwich_plan(self, targets: tuple[int, ...]) -> tuple:

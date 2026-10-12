@@ -7,6 +7,7 @@ random-draw cursor; numerical modules manipulate the quantum buffer.
 
 from collections.abc import Callable, Sequence
 from math import prod
+from typing import NamedTuple
 
 import numpy as np
 from numba import njit, prange
@@ -38,6 +39,17 @@ from ...numerics.numba._measurement import (
     _sv_reset_kernel,
 )
 from ...state import NumbaClassicalState, NumbaEvolutionState, NumbaQuantumState
+
+
+class _PreparedSVTrajectories(NamedTuple):
+    """Packed arrays and per-shot draw budget for the compiled SV workflow.
+
+    This record stays on the host; the compiled entry receives the original
+    positional arrays and scalar budget. Array references are retained as-is.
+    """
+
+    plan_arrays: tuple[np.ndarray, ...]
+    max_draws: int
 
 
 def _plan_compilable(plan: Sequence[ResolvedStep]) -> bool:
@@ -75,7 +87,7 @@ def _compile_dynamic_plan(
     dims: tuple[int, ...],
     build_apply_plan: Callable[[tuple[int, ...]], tuple],
     resolve_structure: Callable[[ApplyMatrixStep], tuple],
-) -> tuple[tuple, int]:
+) -> _PreparedSVTrajectories:
     """Flatten a plan into typed arrays for `_run_sv_trajectories`.
 
     Uses the supplied numerical layout builder; measurement/reset carry their
@@ -85,7 +97,7 @@ def _compile_dynamic_plan(
     measurement hands its confusion tuple to `_compile_readout_table`, whose
     pointers are indexed by the measured-subsystem position built here.
 
-    Returns the kernel's positional plan arrays and the per-shot uniform-draw
+    Returns a host record of positional plan arrays and the per-shot uniform-draw
     budget: one per measurement, one more per confusion-bearing measured
     subsystem, and one per reset and channel - the upper bound on RNG draws
     (a conditioned reset or channel that never fires simply draws less).
@@ -221,17 +233,17 @@ def _compile_dynamic_plan(
     )
     num_confusions = int(np.count_nonzero(me_conf_ptr >= 0))
     max_draws = num_measurements + num_confusions + num_resets + len(channel_entries)
-    return plan_arrays, max_draws
+    return _PreparedSVTrajectories(plan_arrays, max_draws)
 
 
 def _execute_sv_trajectories(
     context: ExecutionContext,
-    compiled,
+    compiled: _PreparedSVTrajectories,
     *,
     initial_state: InitialEvolutionState[np.ndarray],
 ) -> RawResult[np.ndarray]:
     """Execute a materialized counts plan in one compiled multi-shot call."""
-    plan_arrays, max_draws = compiled
+    max_draws = compiled.max_draws
     shots = context.shots
     uniforms = np.empty(shots * max_draws, dtype=np.float64)
     for s, seed_sequence in enumerate(
@@ -257,7 +269,7 @@ def _execute_sv_trajectories(
     clbits = initial_state.classical.clbits
     clbits_start = np.asarray(clbits if clbits is not None else (), dtype=np.int64)
     rows = _run_sv_trajectories(
-        *plan_arrays,
+        *compiled.plan_arrays,
         start,
         state_size,
         custom_start,

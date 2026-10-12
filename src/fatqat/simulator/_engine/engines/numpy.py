@@ -62,7 +62,7 @@ from abc import abstractmethod
 from collections.abc import Callable, Sequence
 from functools import partial
 from math import prod
-from typing import Any, Literal
+from typing import Literal, NamedTuple
 
 import numpy as np
 
@@ -122,6 +122,17 @@ from ..workflows.python import (
 )
 
 # --- shared orchestration ---
+
+
+class _PreparedPythonExecution(NamedTuple):
+    """Effective plan and deferred measurements for Python-driven execution.
+
+    Retains the prepared plan without copying steps or numerical arrays. Numba
+    engines carry this same record alongside their runtime-specific preparation.
+    """
+
+    plan: tuple[ResolvedStep, ...]
+    deferred_measurements: tuple[tuple[int, int], ...]
 
 
 class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
@@ -246,7 +257,7 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
         system_dims: tuple[int, ...],
         n_clbits: int,
         policy: ExecutionPolicy,
-    ) -> tuple[tuple[ResolvedStep, ...], tuple[tuple[int, int], ...]]:
+    ) -> _PreparedPythonExecution:
         """Retain the canonical plan and finalized deferred measurements."""
         self.configure_system(system_dims, n_clbits)
         self._retain_step_caches(plan)
@@ -260,7 +271,7 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
             if policy.execution_path == "single_pass"
             else ()
         )
-        return plan, measurements
+        return _PreparedPythonExecution(plan, measurements)
 
     def _retain_step_caches(self, plan: tuple[ResolvedStep, ...]) -> None:
         """Retain only the effective plan's identity-keyed step resolutions.
@@ -318,7 +329,7 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
     def execute_local(
         self,
         context: ExecutionContext,
-        payload: Any,
+        payload: _PreparedPythonExecution,
         policy: ExecutionPolicy,
         *,
         initial_state: InitialEvolutionState[np.ndarray],
@@ -326,15 +337,16 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
         """Execute one materialized state plan without dispatching."""
         assert policy.shot_strategy != "processes"
         self.configure_system(context.system_dims, context.n_clbits)
-        plan, measurements = payload[:2]
         with self._execution_scope(policy):
             if policy.execution_path == "per_shot":
-                return _run_per_shot(self, plan, context, initial_state=initial_state)
+                return _run_per_shot(
+                    self, payload.plan, context, initial_state=initial_state
+                )
             assert policy.execution_path == "single_pass"
             return _run_single_pass(
                 self,
-                plan,
-                measurements,
+                payload.plan,
+                payload.deferred_measurements,
                 context.shots,
                 np.random.default_rng(context.seed),
                 context.request,
@@ -344,7 +356,7 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
     def execute_shot_batch(
         self,
         context: ExecutionContext,
-        payload: Any,
+        payload: _PreparedPythonExecution,
         seed_batch: list[np.random.SeedSequence],
         policy: ExecutionPolicy,
         *,
@@ -354,11 +366,10 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
         assert policy.shot_strategy == "serial"
         assert policy.kernel_strategy == "serial"
         self.configure_system(context.system_dims, context.n_clbits)
-        plan = payload[0]
         with self._execution_scope(policy):
             return _run_shot_batch(
                 self,
-                plan,
+                payload.plan,
                 seed_batch,
                 initial_state,
             )
@@ -555,7 +566,7 @@ class _NumpyOperatorEngine(_NumpyMatrixEngine):
     def execute_local(
         self,
         context: ExecutionContext,
-        payload: Any,
+        payload: _PreparedPythonExecution,
         policy: ExecutionPolicy,
         *,
         initial_state: InitialEvolutionState[np.ndarray],
@@ -564,7 +575,6 @@ class _NumpyOperatorEngine(_NumpyMatrixEngine):
         assert policy.shot_strategy == "none"
         assert policy.execution_path == "operator"
         self.configure_system(context.system_dims, context.n_clbits)
-        plan = payload[0]
         with self._execution_scope(policy):
             self.initialize(
                 self._dims,
@@ -573,7 +583,7 @@ class _NumpyOperatorEngine(_NumpyMatrixEngine):
             )
             rng = np.random.default_rng(context.seed)
             request = context.request
-            return _run_operator_plan(self, plan, rng, request)
+            return _run_operator_plan(self, payload.plan, rng, request)
 
     def probabilities(self) -> np.ndarray:
         """Unsupported: an operator is a map, not a distribution over states."""
