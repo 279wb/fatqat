@@ -554,12 +554,12 @@ class Simulator:
                   uses fresh entropy. A negative value is rejected during
                   execution, so ``Job.result()`` raises ``ValueError``. A
                   fixed seed reproduces counts only for the same method,
-                  runtime, parallelism settings, and result requests: on the
-                  numba runtime, channel-noise runs select mathematically
-                  equal but numerically distinct samplers depending on
-                  ``shot_parallelism`` and on whether a final state is
-                  requested, so knife-edge draws can differ across those
-                  settings.
+                  runtime, shot count, parallelism settings, and result
+                  requests: on the numba runtime, channel-noise runs select
+                  mathematically equal but numerically distinct samplers
+                  depending on shot count, ``shot_parallelism``, and whether
+                  a final state is requested, so knife-edge draws can differ
+                  across those settings.
                 - ``"shot_parallelism"`` (``str``, default ``"auto"``): How
                   independent shots run: ``"auto"``, ``"serial"``,
                   ``"threads"``, or ``"processes"``. Explicit parallel modes

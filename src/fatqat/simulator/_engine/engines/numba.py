@@ -193,6 +193,7 @@ class NumbaSVEngine(NumpySVEngine):
         execution_path: str,
         counts_requested: bool,
         state_requested: bool,
+        shots: int,
         initial_state: InitialEvolutionState[np.ndarray],
     ) -> tuple[str, bool]:
         """Choose Python or whole-trajectory Numba execution for this request."""
@@ -205,6 +206,7 @@ class NumbaSVEngine(NumpySVEngine):
         )
         if (
             can_select_numba
+            and shots > 1
             and execution_path == "per_shot"
             and counts_requested
             and not state_requested
@@ -687,6 +689,7 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
         execution_path: str,
         counts_requested: bool,
         state_requested: bool,
+        shots: int,
         initial_state: InitialEvolutionState[np.ndarray],
     ) -> tuple[str, bool]:
         """Use the Numba whole-plan executor for operator evolution."""

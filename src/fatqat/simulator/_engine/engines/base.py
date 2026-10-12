@@ -126,6 +126,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         execution_path: str,
         counts_requested: bool,
         state_requested: bool,
+        shots: int,
         initial_state: InitialEvolutionState[QuantumDataT],
     ) -> tuple[str, bool]:
         """Return the engine's workflow identifier and shot-threading support.
@@ -152,6 +153,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
             execution_path=execution_path,
             counts_requested=counts_requested,
             state_requested=state_requested,
+            shots=shots,
             initial_state=initial_state,
         )
         capabilities = self.capabilities

@@ -752,3 +752,39 @@ def test_multi_slot_extent_has_joint_kraus_dimension():
 
     assert channel_steps[0].target_indices == (1, 0)
     assert all(kraus.shape == (4, 4) for kraus in channel_steps[0].kraus_ops)
+
+
+@pytest.mark.parametrize("seed", [0, 7, 42])
+def test_numba_single_trajectory_counts_agree_with_state_request(seed):
+    program = fq.Program(2, 2)
+    program.add(ops.H, 0)
+    program.add(ops.CX, (0, 1))
+    program.measure(0, 0)
+    program.add(ops.X, 1)
+    program.measure(1, 1)
+    noise = NoiseModel()
+    noise.add(Depolarizing(p=0.3), operation=ops.X)
+    backend = Simulator("SV", runtime="numba", noise=noise)
+    config = {
+        "seed": seed,
+        "shot_parallelism": "serial",
+        "kernel_parallelism": "serial",
+    }
+
+    counts = (
+        backend.run(
+            program, shots=1, simulation_config=config, result_config={"counts": True}
+        )
+        .result()
+        .get_counts()
+    )
+    with_state = backend.run(
+        program,
+        shots=1,
+        simulation_config=config,
+        result_config={"counts": True, "final_state": True},
+    ).result()
+
+    assert counts == with_state.get_counts()
+    assert sum(counts.values()) == 1
+    assert np.isclose(np.linalg.norm(with_state.get_statevector()), 1.0)

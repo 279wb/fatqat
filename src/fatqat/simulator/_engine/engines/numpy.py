@@ -120,6 +120,7 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
         execution_path: str,
         counts_requested: bool,
         state_requested: bool,
+        shots: int,
         initial_state: InitialEvolutionState[np.ndarray],
     ) -> tuple[str, bool]:
         """Use shared Python execution for states and operators."""
