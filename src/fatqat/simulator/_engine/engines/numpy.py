@@ -68,7 +68,6 @@ import numpy as np
 
 from ...._expectation import expectation_density_matrix, expectation_statevector
 from ..._execution_contract import (
-    _ResultRequest as ResultRequest,
     RawResult,
     _InitialEvolutionState as InitialEvolutionState,
     _ExecutionContext as ExecutionContext,
@@ -116,6 +115,7 @@ from ..numerics.numpy import (
 from ..parallel import _run_shots_in_processes
 from ..state import ClassicalState, EvolutionState, QuantumState
 from ..workflows.python import (
+    _run_operator_plan,
     _run_single_pass,
     _run_one_shot,
     _run_per_shot,
@@ -579,32 +579,7 @@ class _NumpyOperatorEngine(_NumpyMatrixEngine):
             request = context.request
             return self._run_operator_plan(plan, rng, request)
 
-    def _run_operator_plan(
-        self,
-        plan: Sequence[ResolvedStep],
-        rng: np.random.Generator,
-        request: ResultRequest,
-    ) -> RawResult[np.ndarray]:
-        for step in plan:
-            assert not isinstance(
-                step, MeasurementStep
-            ), "operator execution cannot represent a measurement"
-            assert (
-                step.condition is None
-            ), "operator execution cannot represent a feedforward condition"
-            if isinstance(step, ApplyMatrixStep):
-                self.apply(step)
-            elif isinstance(step, ApplyChannelStep):
-                self.apply_channel(step, rng)
-            elif isinstance(step, ResetStep):
-                self.reset_subsystems(step.reset_indices, rng)
-            else:
-                raise TypeError(
-                    f"unknown resolved execution step {type(step).__name__}"
-                )
-
-        state = self.export_state() if getattr(request, self._state_field) else None
-        return RawResult(state=state)
+    _run_operator_plan = _run_operator_plan
 
     def probabilities(self) -> np.ndarray:
         """Unsupported: an operator is a map, not a distribution over states."""

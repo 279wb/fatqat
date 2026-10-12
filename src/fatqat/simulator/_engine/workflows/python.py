@@ -1,8 +1,8 @@
-"""Shared Python state sequencing for matrix-family numerical runtimes.
+"""Shared Python state and operator sequencing for matrix-family numerical runtimes.
 
 Functions bind directly to the matrix engines, which supply numerical operations
 and evolving state. The workflow owns step sequencing, classical updates, and
-random-stream coordination for single-evolution and per-shot execution.
+random-stream coordination for single-evolution, per-shot, and operator execution.
 """
 
 from __future__ import annotations
@@ -230,3 +230,29 @@ def _run_one_shot(
                 engine.reset_subsystems(step.reset_indices, rng)
     # Unwritten report digits are zero even when no register was needed.
     return tuple(clbits) if clbits is not None else (0,) * engine._n_clbits
+
+
+def _run_operator_plan(
+    engine,
+    plan: Sequence[ResolvedStep],
+    rng: np.random.Generator,
+    request: ResultRequest,
+) -> RawResult[np.ndarray]:
+    for step in plan:
+        assert not isinstance(
+            step, MeasurementStep
+        ), "operator execution cannot represent a measurement"
+        assert (
+            step.condition is None
+        ), "operator execution cannot represent a feedforward condition"
+        if isinstance(step, ApplyMatrixStep):
+            engine.apply(step)
+        elif isinstance(step, ApplyChannelStep):
+            engine.apply_channel(step, rng)
+        elif isinstance(step, ResetStep):
+            engine.reset_subsystems(step.reset_indices, rng)
+        else:
+            raise TypeError(f"unknown resolved execution step {type(step).__name__}")
+
+    state = engine.export_state() if getattr(request, engine._state_field) else None
+    return RawResult(state=state)
