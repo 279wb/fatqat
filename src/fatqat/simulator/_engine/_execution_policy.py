@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from .._execution_contract import (
-    _InitialEvolutionState as InitialEvolutionState,
     _SimulationConfig as SimulationConfig,
     _KernelCapabilities as KernelCapabilities,
 )
@@ -23,7 +22,8 @@ class _ExecutionPolicy:
     kernel_strategy: Literal["serial", "adaptive", "threads"]
     worker_limit: int | None
     fusion: bool
-    use_compiled_multi_shot_kernel: bool = False
+    # Engine-owned identifier: scheduling preserves it without interpreting it.
+    workflow: str = "python"
 
 
 _PARALLEL_MIN_SHOTS = 32
@@ -69,52 +69,24 @@ def _materialization_policy(parent: _ExecutionPolicy) -> _ExecutionPolicy:
     """Project process-shot preparation into local parent execution controls."""
     if parent.shot_strategy != "processes":
         return parent
-    return _ExecutionPolicy(
-        execution_path=parent.execution_path,
+    return replace(
+        parent,
         shot_strategy="serial",
         kernel_strategy="serial",
         worker_limit=1,
-        fusion=parent.fusion,
-        use_compiled_multi_shot_kernel=False,
     )
 
 
 def _process_child_policy(parent: _ExecutionPolicy) -> _ExecutionPolicy:
     """Revoke dispatch and preparation authority in a process child."""
     assert parent.shot_strategy == "processes"
-    return _ExecutionPolicy(
-        execution_path=parent.execution_path,
+    return replace(
+        parent,
         shot_strategy="serial",
         kernel_strategy="serial",
         worker_limit=1,
         # The parent already materialized any requested fusion into the payload.
         fusion=False,
-        use_compiled_multi_shot_kernel=False,
-    )
-
-
-def _should_probe_compiled_multi_shot(
-    simulation: SimulationConfig,
-    *,
-    execution_path: Literal["operator", "single_pass", "per_shot"],
-    counts_requested: bool,
-    state_requested: bool,
-    initial_state: InitialEvolutionState,
-) -> bool:
-    """Whether cheap prerequisites justify exact-plan compatibility analysis."""
-    shot_request = simulation.shot_parallelism
-    kernel_request = simulation.kernel_parallelism
-    can_select_compiled = (
-        shot_request == "threads"
-        or (shot_request == "serial" and kernel_request == "serial")
-        or (shot_request == "auto" and kernel_request != "threads")
-    )
-    return (
-        can_select_compiled
-        and execution_path == "per_shot"
-        and counts_requested
-        and not state_requested
-        and initial_state.classical.occupied is None
     )
 
 
@@ -142,20 +114,19 @@ def _resolve_execution_policy(
     counts_requested: bool,
     state_requested: bool,
     capabilities: KernelCapabilities,
-    compiled_multi_shot_compatible: bool,
+    workflow: str,
+    supports_shot_threads: bool,
     supports_process_shots: bool,
     shots: int,
-    initial_state: InitialEvolutionState,
     plan_is_empty: bool = False,
 ) -> _ExecutionPolicy:
-    """Resolve validated controls and semantic facts into one final policy."""
+    """Schedule an engine-selected workflow without interpreting its identifier.
+
+    The engine checks whole-request eligibility before declaring shot threading
+    support. This helper retains the selected workflow in the resolved policy.
+    """
     execution_has_shots = execution_path == "per_shot"
     shot_shardable = execution_has_shots and counts_requested and not state_requested
-    compiled_eligible = (
-        shot_shardable
-        and initial_state.classical.occupied is None
-        and compiled_multi_shot_compatible
-    )
     shot_request = simulation.shot_parallelism
     kernel_request = simulation.kernel_parallelism
 
@@ -195,10 +166,8 @@ def _resolve_execution_policy(
     else:
         kernel_strategy, kernel_workers = "serial", 1
 
-    use_compiled = False
-
     if shot_request == "threads":
-        if not compiled_eligible:
+        if not supports_shot_threads:
             raise BackendValidationError(
                 "shot_parallelism='threads' requires compiled multi-shot support "
                 "from the selected engine for this plan"
@@ -214,7 +183,6 @@ def _resolve_execution_policy(
         shot_strategy = "threads"
         kernel_strategy = "serial"
         worker_limit = shot_workers
-        use_compiled = True
     elif shot_request == "processes":
         process_workers = _process_worker_ceiling(simulation.max_workers)
         if process_workers < 2:
@@ -227,10 +195,9 @@ def _resolve_execution_policy(
         worker_limit = process_workers
     elif shot_request == "serial":
         shot_strategy = "serial" if execution_has_shots else "none"
-        if kernel_request == "serial" and compiled_eligible:
+        if kernel_request == "serial" and supports_shot_threads:
             kernel_strategy = "serial"
             worker_limit = 1
-            use_compiled = True
         else:
             worker_limit = kernel_workers
     elif kernel_request == "threads":
@@ -238,7 +205,7 @@ def _resolve_execution_policy(
         shot_strategy = "serial" if execution_has_shots else "none"
         kernel_strategy = "threads"
         worker_limit = kernel_workers
-    elif compiled_eligible:
+    elif supports_shot_threads:
         shot_workers = _adaptive_thread_worker_ceiling(
             simulation.max_workers, capabilities
         )
@@ -251,7 +218,6 @@ def _resolve_execution_policy(
             shot_strategy = "serial"
             worker_limit = 1
         kernel_strategy = "serial"
-        use_compiled = True
     else:
         process_workers = _process_worker_ceiling(simulation.max_workers)
         if (
@@ -267,12 +233,12 @@ def _resolve_execution_policy(
             shot_strategy = "serial" if execution_has_shots else "none"
             worker_limit = kernel_workers
 
-    assert not use_compiled or kernel_strategy == "serial"
+    assert not supports_shot_threads or kernel_strategy == "serial"
     return _ExecutionPolicy(
         execution_path=execution_path,
         shot_strategy=shot_strategy,
         kernel_strategy=kernel_strategy,
         worker_limit=worker_limit,
         fusion=simulation.fusion,
-        use_compiled_multi_shot_kernel=use_compiled,
+        workflow=workflow,
     )

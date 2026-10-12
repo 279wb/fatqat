@@ -66,6 +66,7 @@ import numpy as np
 from ...._expectation import expectation_density_matrix, expectation_statevector
 from ..._execution_contract import (
     _InitialEvolutionState as InitialEvolutionState,
+    _SimulationConfig as SimulationConfig,
     _KernelCapabilities,
     _QuantumCapabilities,
     _TrajectoryCapabilities,
@@ -110,6 +111,19 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
     Shared plan preparation and workflow invocation come from ``MatrixEngine``.
     Subclasses supply representation-specific numerical operations.
     """
+
+    def _select_workflow(
+        self,
+        plan: Sequence[ResolvedStep],
+        simulation: SimulationConfig,
+        *,
+        execution_path: str,
+        counts_requested: bool,
+        state_requested: bool,
+        initial_state: InitialEvolutionState[np.ndarray],
+    ) -> tuple[str, bool]:
+        """Use shared Python execution for states and operators."""
+        return "python", False
 
     def initialize(
         self,

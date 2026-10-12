@@ -95,6 +95,7 @@ import numpy as np
 from ..._execution_contract import (
     RawResult,
     _InitialEvolutionState as InitialEvolutionState,
+    _SimulationConfig as SimulationConfig,
     _ExecutionContext as ExecutionContext,
     _KernelCapabilities,
     _QuantumCapabilities,
@@ -184,6 +185,35 @@ class NumbaSVEngine(NumpySVEngine):
         supports_fusion=False,
     )
 
+    def _select_workflow(
+        self,
+        plan: Sequence[ResolvedStep],
+        simulation: SimulationConfig,
+        *,
+        execution_path: str,
+        counts_requested: bool,
+        state_requested: bool,
+        initial_state: InitialEvolutionState[np.ndarray],
+    ) -> tuple[str, bool]:
+        """Choose Python or whole-trajectory Numba execution for this request."""
+        shot_request = simulation.shot_parallelism
+        kernel_request = simulation.kernel_parallelism
+        can_select_numba = (
+            shot_request == "threads"
+            or (shot_request == "serial" and kernel_request == "serial")
+            or (shot_request == "auto" and kernel_request != "threads")
+        )
+        if (
+            can_select_numba
+            and execution_path == "per_shot"
+            and counts_requested
+            and not state_requested
+            and initial_state.classical.occupied is None
+            and self._compiled_multi_shot_compatible(plan)
+        ):
+            return "numba_trajectories", True
+        return "python", False
+
     def _compiled_multi_shot_compatible(self, plan: Sequence[ResolvedStep]) -> bool:
         """Return whether the compiled outer loop can encode this exact plan."""
         return _plan_compilable(plan)
@@ -253,7 +283,7 @@ class NumbaSVEngine(NumpySVEngine):
             for target in targets
         }
         compiled = None
-        if policy.use_compiled_multi_shot_kernel:
+        if policy.workflow == "numba_trajectories":
             compiled = _compile_dynamic_plan(
                 list(execution_plan),
                 self._dims,
@@ -274,10 +304,12 @@ class NumbaSVEngine(NumpySVEngine):
     ) -> RawResult[np.ndarray]:
         self.configure_system(context.system_dims, context.n_clbits)
         self._apply_plans = dict(payload.apply_plans)
-        if not policy.use_compiled_multi_shot_kernel:
+        if policy.workflow == "python":
             return super().execute_local(
                 context, payload.python_execution, policy, initial_state=initial_state
             )
+        assert policy.workflow == "numba_trajectories"
+        assert payload.compiled_trajectories is not None
         with self._execution_scope(policy):
             return _execute_sv_trajectories(
                 context, payload.compiled_trajectories, initial_state=initial_state
@@ -647,6 +679,19 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
     `_operator_payloads`.
     """
 
+    def _select_workflow(
+        self,
+        plan: Sequence[ResolvedStep],
+        simulation: SimulationConfig,
+        *,
+        execution_path: str,
+        counts_requested: bool,
+        state_requested: bool,
+        initial_state: InitialEvolutionState[np.ndarray],
+    ) -> tuple[str, bool]:
+        """Use the Numba whole-plan executor for operator evolution."""
+        return "numba_operator", False
+
     # State-engine reuse must not override the operator measurement contract.
     probabilities = _NumpyOperatorEngine.probabilities
     collapse = _NumpyOperatorEngine.collapse
@@ -660,6 +705,7 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
         policy: ExecutionPolicy,
     ) -> _PreparedOperatorExecution:
         """Resolve, optionally fuse, and pack the operator plan once."""
+        assert policy.workflow == "numba_operator"
         self.configure_system(system_dims, n_clbits)
         execution_plan = self._operator_execution_plan(plan, policy)
         self._retain_step_caches(execution_plan)
@@ -690,6 +736,7 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
         initial_state: InitialEvolutionState[np.ndarray],
     ) -> RawResult[np.ndarray]:
         """Execute one already-packed operator payload without replanning."""
+        assert policy.workflow == "numba_operator"
         assert policy.shot_strategy == "none"
         assert policy.execution_path == "operator"
         self.configure_system(context.system_dims, context.n_clbits)

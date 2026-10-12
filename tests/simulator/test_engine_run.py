@@ -3,6 +3,7 @@ import pytest
 
 from fatqat.simulator._execution_contract import (
     _StateVectorResultRequest,
+    _SimulationConfig,
     _ExecutionContext,
     _InitialEvolutionState,
     _InitialClassicalState,
@@ -201,7 +202,7 @@ def test_initial_register_drives_feedback_and_is_fresh_per_shot(mode):
         kernel_strategy="serial",
         worker_limit=2 if mode == "processes" else 1,
         fusion=False,
-        use_compiled_multi_shot_kernel=mode == "compiled",
+        workflow="numba_trajectories" if mode == "compiled" else "python",
     )
 
     result = engine.execute(
@@ -280,3 +281,30 @@ def test_operator_engine_accepts_absent_classical_components():
     engine = NumpyUnitaryEngine()
     engine.initialize((2,), initial_state=_InitialEvolutionState())
     np.testing.assert_array_equal(engine.export_state(), np.eye(2))
+
+
+def test_numba_initial_occupancy_preserves_erased_measurement():
+    from fatqat.simulator._engine.engines.numba import NumbaSVEngine
+
+    engine = NumbaSVEngine()
+    plan = (ResetStep((0,)), MeasurementStep((0,), (0,)))
+    initial = _InitialEvolutionState(
+        classical=_InitialClassicalState(occupied=frozenset())
+    )
+    context = _context(
+        n_clbits=1,
+        shots=4,
+        request=_StateVectorResultRequest(counts=True, statevector=False),
+    )
+    policy = engine.resolve_execution_policy(
+        plan,
+        _SimulationConfig(shot_parallelism="serial", kernel_parallelism="serial"),
+        counts_requested=True,
+        state_requested=False,
+        shots=context.shots,
+        initial_state=initial,
+    )
+    result = engine.execute(plan, context=context, policy=policy, initial_state=initial)
+
+    assert result.outcome_keys.tolist() == [[2]]
+    assert result.outcome_counts.tolist() == [4]

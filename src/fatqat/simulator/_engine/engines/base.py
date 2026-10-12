@@ -35,7 +35,6 @@ from .._execution_policy import (
     _ExecutionPolicy as ExecutionPolicy,
     _materialization_policy,
     _resolve_execution_policy,
-    _should_probe_compiled_multi_shot,
 )
 from ..parallel import _run_shots_in_processes
 from ..state import EvolutionState, QuantumDataT, QuantumState
@@ -118,9 +117,22 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
             supports_process_shots=self._supports_process_shots,
         )
 
-    def _compiled_multi_shot_compatible(self, plan: Sequence[ResolvedStep]) -> bool:
-        """Whether this engine can own the complete per-shot outer loop."""
-        return False
+    @abstractmethod
+    def _select_workflow(
+        self,
+        plan: Sequence[ResolvedStep],
+        simulation: SimulationConfig,
+        *,
+        execution_path: str,
+        counts_requested: bool,
+        state_requested: bool,
+        initial_state: InitialEvolutionState[QuantumDataT],
+    ) -> tuple[str, bool]:
+        """Return the engine's workflow identifier and shot-threading support.
+
+        Select against the complete request and controls before scheduling.
+        The base passes the identifier through; concrete entries interpret it.
+        """
 
     def resolve_execution_policy(
         self,
@@ -134,15 +146,14 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
     ) -> ExecutionPolicy:
         """Choose execution paths for a plan using this engine's support."""
         execution_path = self._select_execution_path(plan, initial_state=initial_state)
-        compiled_multi_shot_compatible = False
-        if _should_probe_compiled_multi_shot(
+        workflow, supports_shot_threads = self._select_workflow(
+            plan,
             simulation,
             execution_path=execution_path,
             counts_requested=counts_requested,
             state_requested=state_requested,
             initial_state=initial_state,
-        ):
-            compiled_multi_shot_compatible = self._compiled_multi_shot_compatible(plan)
+        )
         capabilities = self.capabilities
         return _resolve_execution_policy(
             simulation,
@@ -150,10 +161,10 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
             counts_requested=counts_requested,
             state_requested=state_requested,
             capabilities=capabilities.kernels,
+            workflow=workflow,
+            supports_shot_threads=supports_shot_threads,
             supports_process_shots=capabilities.supports_process_shots,
-            compiled_multi_shot_compatible=compiled_multi_shot_compatible,
             shots=shots,
-            initial_state=initial_state,
             plan_is_empty=not plan,
         )
 

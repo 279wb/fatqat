@@ -9,8 +9,6 @@ from fatqat.simulator._execution_contract import (
     _SimulationConfig,
     _KernelCapabilities,
     _TrajectoryCapabilities,
-    _InitialEvolutionState,
-    _InitialClassicalState,
 )
 from fatqat.simulator._engine._execution_policy import (
     _ExecutionPolicy,
@@ -194,9 +192,9 @@ def test_engine_quantum_support_controls_early_validation(monkeypatch, operation
         "counts_requested",
         "state_requested",
         "capabilities",
-        "compatible",
+        "workflow",
+        "supports_shot_threads",
         "shots",
-        "initial_occupied",
         "expected",
     ),
     [
@@ -206,10 +204,10 @@ def test_engine_quantum_support_controls_early_validation(monkeypatch, operation
             False,
             True,
             _KernelCapabilities(True, 8, False),
+            "numba_operator",
             False,
             1,
-            None,
-            ("none", "adaptive", None, False, False),
+            ("none", "adaptive", None, False, "numba_operator"),
             id="operator-auto-adaptive-kernels",
         ),
         pytest.param(
@@ -218,10 +216,10 @@ def test_engine_quantum_support_controls_early_validation(monkeypatch, operation
             False,
             True,
             _KernelCapabilities(False, 1, False),
+            "python",
             False,
             1,
-            None,
-            ("none", "serial", 1, False, False),
+            ("none", "serial", 1, False, "python"),
             id="operator-auto-serial-without-thread-capability",
         ),
         pytest.param(
@@ -230,10 +228,10 @@ def test_engine_quantum_support_controls_early_validation(monkeypatch, operation
             True,
             False,
             _KernelCapabilities(True, 8, False),
+            "numba_trajectories",
             True,
             64,
-            None,
-            ("threads", "serial", None, False, True),
+            ("threads", "serial", None, False, "numba_trajectories"),
             id="auto-compatible-compiled-shots",
         ),
         pytest.param(
@@ -242,10 +240,10 @@ def test_engine_quantum_support_controls_early_validation(monkeypatch, operation
             True,
             False,
             _KernelCapabilities(True, 8, False),
+            "python",
             False,
             64,
-            None,
-            ("processes", "serial", 4, False, False),
+            ("processes", "serial", 4, False, "python"),
             id="auto-large-incompatible-process-shots",
         ),
         pytest.param(
@@ -254,10 +252,10 @@ def test_engine_quantum_support_controls_early_validation(monkeypatch, operation
             True,
             False,
             _KernelCapabilities(True, 8, False),
+            "python",
             False,
             8,
-            None,
-            ("serial", "adaptive", 4, False, False),
+            ("serial", "adaptive", 4, False, "python"),
             id="auto-small-work-adaptive-kernels",
         ),
         pytest.param(
@@ -270,10 +268,10 @@ def test_engine_quantum_support_controls_early_validation(monkeypatch, operation
             True,
             False,
             _KernelCapabilities(True, 8, False),
-            True,
+            "python",
+            False,
             64,
-            None,
-            ("serial", "adaptive", 4, False, False),
+            ("serial", "adaptive", 4, False, "python"),
             id="serial-shots-use-ordered-adaptive-replay",
         ),
         pytest.param(
@@ -286,10 +284,10 @@ def test_engine_quantum_support_controls_early_validation(monkeypatch, operation
             True,
             False,
             _KernelCapabilities(True, 8, False),
-            True,
+            "python",
+            False,
             64,
-            None,
-            ("serial", "threads", 8, False, False),
+            ("serial", "threads", 8, False, "python"),
             id="serial-shots-forced-threaded-kernels",
         ),
         pytest.param(
@@ -298,10 +296,10 @@ def test_engine_quantum_support_controls_early_validation(monkeypatch, operation
             True,
             False,
             _KernelCapabilities(True, 8, False),
+            "numba_trajectories",
             True,
             64,
-            None,
-            ("threads", "serial", 8, False, True),
+            ("threads", "serial", 8, False, "numba_trajectories"),
             id="explicit-shot-threads-have-concrete-capacity",
         ),
         pytest.param(
@@ -314,10 +312,10 @@ def test_engine_quantum_support_controls_early_validation(monkeypatch, operation
             True,
             False,
             _KernelCapabilities(True, 8, True),
+            "python",
             False,
             64,
-            None,
-            ("processes", "serial", 6, True, False),
+            ("processes", "serial", 6, True, "python"),
             id="explicit-process-shots-resolve-stable-capacity",
         ),
         pytest.param(
@@ -326,10 +324,10 @@ def test_engine_quantum_support_controls_early_validation(monkeypatch, operation
             True,
             False,
             _KernelCapabilities(True, 8, False),
+            "numba_trajectories",
             True,
             64,
-            None,
-            ("serial", "serial", 1, False, True),
+            ("serial", "serial", 1, False, "numba_trajectories"),
             id="explicit-serial-uses-compatible-compiled-loop",
         ),
         pytest.param(
@@ -338,23 +336,11 @@ def test_engine_quantum_support_controls_early_validation(monkeypatch, operation
             True,
             False,
             _KernelCapabilities(True, 8, False),
+            "numba_trajectories",
             True,
             64,
-            None,
-            ("serial", "serial", 1, False, True),
+            ("serial", "serial", 1, False, "numba_trajectories"),
             id="auto-one-worker-uses-serial-compiled-loop",
-        ),
-        pytest.param(
-            _SimulationConfig(shot_parallelism="serial", kernel_parallelism="serial"),
-            "per_shot",
-            True,
-            False,
-            _KernelCapabilities(True, 8, False),
-            True,
-            64,
-            frozenset(),
-            ("serial", "serial", 1, False, False),
-            id="initial-occupancy-disables-compiled-loop",
         ),
     ],
 )
@@ -364,9 +350,9 @@ def test_execution_policy_decision_table(
     counts_requested,
     state_requested,
     capabilities,
-    compatible,
+    workflow,
+    supports_shot_threads,
     shots,
-    initial_occupied,
     expected,
     monkeypatch,
 ):
@@ -381,12 +367,10 @@ def test_execution_policy_decision_table(
         counts_requested=counts_requested,
         state_requested=state_requested,
         capabilities=capabilities,
-        compiled_multi_shot_compatible=compatible,
+        workflow=workflow,
+        supports_shot_threads=supports_shot_threads,
         supports_process_shots=True,
         shots=shots,
-        initial_state=_InitialEvolutionState(
-            quantum=None, classical=_InitialClassicalState(occupied=initial_occupied)
-        ),
     )
 
     assert (
@@ -394,13 +378,13 @@ def test_execution_policy_decision_table(
         policy.kernel_strategy,
         policy.worker_limit,
         policy.fusion,
-        policy.use_compiled_multi_shot_kernel,
+        policy.workflow,
     ) == expected
     assert not (
         policy.shot_strategy in {"threads", "processes"}
         and policy.kernel_strategy == "threads"
     )
-    assert not policy.use_compiled_multi_shot_kernel or (
+    assert policy.workflow != "numba_trajectories" or (
         policy.kernel_strategy == "serial"
     )
 
@@ -421,10 +405,10 @@ def test_process_worker_capacity_follows_the_cpu_affinity_mask(monkeypatch):
         counts_requested=True,
         state_requested=False,
         capabilities=_KernelCapabilities(True, 8, True),
-        compiled_multi_shot_compatible=False,
+        workflow="python",
+        supports_shot_threads=False,
         supports_process_shots=True,
         shots=64,
-        initial_state=_InitialEvolutionState(quantum=None),
     )
 
     assert policy.worker_limit == 3
@@ -539,10 +523,10 @@ def test_execution_policy_rejects_inapplicable_requests(
             counts_requested=counts_requested,
             state_requested=state_requested,
             capabilities=capabilities,
-            compiled_multi_shot_compatible=compatible,
+            workflow="test-workflow",
+            supports_shot_threads=compatible,
             supports_process_shots=True,
             shots=shots,
-            initial_state=_InitialEvolutionState(quantum=None),
             plan_is_empty=plan_is_empty,
         )
 

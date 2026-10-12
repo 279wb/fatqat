@@ -588,7 +588,7 @@ def test_numba_compiled_multi_shot_plan_matches_numpy_channels():
             kernel_strategy="serial",
             worker_limit=1,
             fusion=False,
-            use_compiled_multi_shot_kernel=cls is NumbaSVEngine,
+            workflow="numba_trajectories" if cls is NumbaSVEngine else "python",
         )
         payload = simulator.materialize_execution(
             tuple(plan),
