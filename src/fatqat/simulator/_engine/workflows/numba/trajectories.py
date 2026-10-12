@@ -24,9 +24,7 @@ from .....noise.nb import (
     _compile_readout_table,
     _report_digit_kernel,
 )
-from .....result import reduce_to_counts
 from ...._execution_contract import (
-    RawResult,
     _ExecutionContext as ExecutionContext,
     _InitialEvolutionState as InitialEvolutionState,
 )
@@ -241,8 +239,8 @@ def _execute_sv_trajectories(
     compiled: _PreparedSVTrajectories,
     *,
     initial_state: InitialEvolutionState[np.ndarray],
-) -> RawResult[np.ndarray]:
-    """Execute a materialized counts plan in one compiled multi-shot call."""
+) -> np.ndarray:
+    """Return classical shot rows from one compiled multi-shot call."""
     max_draws = compiled.max_draws
     shots = context.shots
     uniforms = np.empty(shots * max_draws, dtype=np.float64)
@@ -268,7 +266,7 @@ def _execute_sv_trajectories(
     )
     clbits = initial_state.classical.clbits
     clbits_start = np.asarray(clbits if clbits is not None else (), dtype=np.int64)
-    rows = _run_sv_trajectories(
+    return _run_sv_trajectories(
         *compiled.plan_arrays,
         start,
         state_size,
@@ -278,12 +276,6 @@ def _execute_sv_trajectories(
         shots,
         uniforms,
         max_draws,
-    )
-    outcome_keys, outcome_counts = reduce_to_counts(rows)
-    return RawResult(
-        outcome_keys=outcome_keys,
-        outcome_counts=outcome_counts,
-        state=None,
     )
 
 

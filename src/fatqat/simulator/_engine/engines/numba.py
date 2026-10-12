@@ -110,6 +110,7 @@ from ...._backends.steps import (
     ResolvedStep,
 )
 from ....noise.nb import _jump_branch_kernel
+from ....result import reduce_to_counts
 from .._execution_policy import _ExecutionPolicy as ExecutionPolicy
 from .._numba_scope import _kernel_thread_workers, _thread_scope
 from ..numerics.numba._apply import (
@@ -313,8 +314,13 @@ class NumbaSVEngine(NumpySVEngine):
         assert policy.workflow == "numba_trajectories"
         assert payload.compiled_trajectories is not None
         with self._execution_scope(policy):
-            return _execute_sv_trajectories(
+            rows = _execute_sv_trajectories(
                 context, payload.compiled_trajectories, initial_state=initial_state
+            )
+            outcome_keys, outcome_counts = reduce_to_counts(rows)
+            return RawResult(
+                outcome_keys=outcome_keys,
+                outcome_counts=outcome_counts,
             )
 
     def execute_shot_batch(
