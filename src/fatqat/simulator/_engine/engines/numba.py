@@ -610,6 +610,10 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
     `_operator_payloads`.
     """
 
+    # State-engine reuse must not override the operator measurement contract.
+    probabilities = _NumpyOperatorEngine.probabilities
+    collapse = _NumpyOperatorEngine.collapse
+
     def materialize_execution(
         self,
         plan: tuple[ResolvedStep, ...],
