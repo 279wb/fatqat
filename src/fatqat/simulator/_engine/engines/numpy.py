@@ -116,7 +116,7 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
     def _select_workflow(
         self,
         plan: Sequence[ResolvedStep],
-        simulation: SimulationConfig,
+        simulation_config: SimulationConfig,
         *,
         execution_path: str,
         counts_requested: bool,

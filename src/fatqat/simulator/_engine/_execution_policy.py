@@ -91,24 +91,24 @@ def _process_child_policy(parent: _ExecutionPolicy) -> _ExecutionPolicy:
 
 
 def _adaptive_kernel_policy(
-    simulation: SimulationConfig,
+    simulation_config: SimulationConfig,
     capabilities: KernelCapabilities,
 ) -> tuple[str, int | None]:
     """Resolve public kernel auto without reading the active caller mask."""
     if (
         not capabilities.supports_kernel_threads
         or capabilities.thread_capacity < 2
-        or simulation.max_workers == 1
+        or simulation_config.max_workers == 1
     ):
         return "serial", 1
     return (
         "adaptive",
-        _adaptive_thread_worker_ceiling(simulation.max_workers, capabilities),
+        _adaptive_thread_worker_ceiling(simulation_config.max_workers, capabilities),
     )
 
 
 def _resolve_execution_policy(
-    simulation: SimulationConfig,
+    simulation_config: SimulationConfig,
     *,
     execution_path: Literal["operator", "single_pass", "per_shot"],
     counts_requested: bool,
@@ -127,8 +127,8 @@ def _resolve_execution_policy(
     """
     execution_has_shots = execution_path == "per_shot"
     shot_shardable = execution_has_shots and counts_requested and not state_requested
-    shot_request = simulation.shot_parallelism
-    kernel_request = simulation.kernel_parallelism
+    shot_request = simulation_config.shot_parallelism
+    kernel_request = simulation_config.kernel_parallelism
 
     if shot_request in {"threads", "processes"}:
         if not execution_has_shots:
@@ -151,7 +151,7 @@ def _resolve_execution_policy(
             capabilities.supports_kernel_threads
         ), "explicit kernel threads require validated engine capabilities"
         kernel_workers = _explicit_thread_worker_ceiling(
-            simulation.max_workers, capabilities
+            simulation_config.max_workers, capabilities
         )
         if kernel_workers < 2 and not plan_is_empty:
             raise BackendValidationError(
@@ -161,7 +161,7 @@ def _resolve_execution_policy(
         kernel_strategy = "threads"
     elif kernel_request == "auto":
         kernel_strategy, kernel_workers = _adaptive_kernel_policy(
-            simulation, capabilities
+            simulation_config, capabilities
         )
     else:
         kernel_strategy, kernel_workers = "serial", 1
@@ -173,7 +173,7 @@ def _resolve_execution_policy(
                 "from the selected engine for this plan"
             )
         shot_workers = _explicit_thread_worker_ceiling(
-            simulation.max_workers, capabilities
+            simulation_config.max_workers, capabilities
         )
         if shot_workers < 2:
             raise BackendValidationError(
@@ -184,7 +184,7 @@ def _resolve_execution_policy(
         kernel_strategy = "serial"
         worker_limit = shot_workers
     elif shot_request == "processes":
-        process_workers = _process_worker_ceiling(simulation.max_workers)
+        process_workers = _process_worker_ceiling(simulation_config.max_workers)
         if process_workers < 2:
             raise BackendValidationError(
                 "shot_parallelism='processes' requires an effective process "
@@ -207,7 +207,7 @@ def _resolve_execution_policy(
         worker_limit = kernel_workers
     elif supports_shot_threads:
         shot_workers = _adaptive_thread_worker_ceiling(
-            simulation.max_workers, capabilities
+            simulation_config.max_workers, capabilities
         )
         if capabilities.thread_capacity >= 2 and (
             shot_workers is None or shot_workers > 1
@@ -219,7 +219,7 @@ def _resolve_execution_policy(
             worker_limit = 1
         kernel_strategy = "serial"
     else:
-        process_workers = _process_worker_ceiling(simulation.max_workers)
+        process_workers = _process_worker_ceiling(simulation_config.max_workers)
         if (
             supports_process_shots
             and shot_shardable
@@ -239,6 +239,6 @@ def _resolve_execution_policy(
         shot_strategy=shot_strategy,
         kernel_strategy=kernel_strategy,
         worker_limit=worker_limit,
-        fusion=simulation.fusion,
+        fusion=simulation_config.fusion,
         workflow=workflow,
     )

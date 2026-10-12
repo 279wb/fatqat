@@ -190,7 +190,7 @@ class NumbaSVEngine(NumpySVEngine):
     def _select_workflow(
         self,
         plan: Sequence[ResolvedStep],
-        simulation: SimulationConfig,
+        simulation_config: SimulationConfig,
         *,
         execution_path: str,
         counts_requested: bool,
@@ -199,8 +199,8 @@ class NumbaSVEngine(NumpySVEngine):
         initial_state: InitialEvolutionState[np.ndarray],
     ) -> tuple[str, bool]:
         """Choose Python or whole-trajectory Numba execution for this request."""
-        shot_request = simulation.shot_parallelism
-        kernel_request = simulation.kernel_parallelism
+        shot_request = simulation_config.shot_parallelism
+        kernel_request = simulation_config.kernel_parallelism
         can_select_numba = (
             shot_request == "threads"
             or (shot_request == "serial" and kernel_request == "serial")
@@ -683,7 +683,7 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
     def _select_workflow(
         self,
         plan: Sequence[ResolvedStep],
-        simulation: SimulationConfig,
+        simulation_config: SimulationConfig,
         *,
         execution_path: str,
         counts_requested: bool,

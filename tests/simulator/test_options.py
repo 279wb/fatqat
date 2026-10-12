@@ -196,7 +196,7 @@ def test_engine_quantum_support_controls_early_validation(monkeypatch, operation
 
 @pytest.mark.parametrize(
     (
-        "simulation",
+        "simulation_config",
         "execution_path",
         "counts_requested",
         "state_requested",
@@ -354,7 +354,7 @@ def test_engine_quantum_support_controls_early_validation(monkeypatch, operation
     ],
 )
 def test_execution_policy_decision_table(
-    simulation,
+    simulation_config,
     execution_path,
     counts_requested,
     state_requested,
@@ -371,7 +371,7 @@ def test_execution_policy_decision_table(
         raising=False,
     )
     policy = _resolve_execution_policy(
-        simulation,
+        simulation_config,
         execution_path=execution_path,
         counts_requested=counts_requested,
         state_requested=state_requested,
@@ -425,7 +425,7 @@ def test_process_worker_capacity_follows_the_cpu_affinity_mask(monkeypatch):
 
 @pytest.mark.parametrize(
     (
-        "simulation",
+        "simulation_config",
         "execution_path",
         "counts_requested",
         "state_requested",
@@ -515,7 +515,7 @@ def test_process_worker_capacity_follows_the_cpu_affinity_mask(monkeypatch):
     ],
 )
 def test_execution_policy_rejects_inapplicable_requests(
-    simulation,
+    simulation_config,
     execution_path,
     counts_requested,
     state_requested,
@@ -527,7 +527,7 @@ def test_execution_policy_rejects_inapplicable_requests(
 ):
     with pytest.raises(BackendValidationError, match=match):
         _resolve_execution_policy(
-            simulation,
+            simulation_config,
             execution_path=execution_path,
             counts_requested=counts_requested,
             state_requested=state_requested,

@@ -107,7 +107,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
     def _select_workflow(
         self,
         plan: Sequence[ResolvedStep],
-        simulation: SimulationConfig,
+        simulation_config: SimulationConfig,
         *,
         execution_path: str,
         counts_requested: bool,
@@ -124,7 +124,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
     def resolve_execution_policy(
         self,
         plan: Sequence[ResolvedStep],
-        simulation: SimulationConfig,
+        simulation_config: SimulationConfig,
         *,
         counts_requested: bool,
         state_requested: bool,
@@ -135,7 +135,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         execution_path = self._select_execution_path(plan, initial_state=initial_state)
         workflow, supports_shot_threads = self._select_workflow(
             plan,
-            simulation,
+            simulation_config,
             execution_path=execution_path,
             counts_requested=counts_requested,
             state_requested=state_requested,
@@ -144,7 +144,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         )
         capabilities = self.capabilities
         return _resolve_execution_policy(
-            simulation,
+            simulation_config,
             execution_path=execution_path,
             counts_requested=counts_requested,
             state_requested=state_requested,
