@@ -308,15 +308,26 @@ def test_pauli_channel_process_batches_match_serial():
 
 def test_pauli_sampling_does_not_change_the_per_shot_draw_budget():
     pytest.importorskip("numba")
-    from fatqat.simulator._engine.engines.numba import NumbaSVEngine
+    from functools import partial
+
+    from fatqat.simulator._engine.numerics.numba._preparation import (
+        _compute_apply_plan,
+        _MatrixStructureCache,
+    )
+    from fatqat.simulator._engine.workflows.numba.trajectories import (
+        _compile_dynamic_plan,
+    )
 
     backend = Simulator("SV", noise=_pauli_noise())
     program = _ghz_program()
     plan, _ = backend._lower_program(program)
-    engine = NumbaSVEngine()
-    engine.initialize((2, 2, 2), 3)
-
-    _, max_draws = engine._compile_dynamic_plan(plan)
+    dims = (2, 2, 2)
+    _, max_draws = _compile_dynamic_plan(
+        plan,
+        dims,
+        partial(_compute_apply_plan, dims),
+        _MatrixStructureCache().resolve,
+    )
 
     # One draw per measurement plus one per channel occurrence (3 gates) - the
     # same budget the general jump path needs.

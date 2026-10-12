@@ -553,7 +553,7 @@ def test_numba_compiled_multi_shot_plan_matches_numpy_channels():
     # quantum-jump branches from the reduced density matrix while NumPy norms
     # each branch - same distribution, counts agree statistically not bit-wise.
     pytest.importorskip("numba")
-    from fatqat.simulator._engine.engines.numba import NumbaSVEngine, _plan_compilable
+    from fatqat.simulator._engine.engines.numba import NumbaSVEngine
 
     noise = NoiseModel()
     noise.add(Depolarizing(p=0.3), operation=ops.X)
@@ -562,7 +562,7 @@ def test_numba_compiled_multi_shot_plan_matches_numpy_channels():
     program.add(ops.X, 0)
     program.measure(0, 0)
     plan, _facts = backend._lower_program(program)
-    assert _plan_compilable(plan) is True
+    assert NumbaSVEngine().compiled_multi_shot_compatible(plan) is True
 
     # Direct engine execution below supplies an explicit private serial policy.
     shots = 400

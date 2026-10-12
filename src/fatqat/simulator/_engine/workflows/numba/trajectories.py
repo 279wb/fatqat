@@ -5,19 +5,31 @@ packed plan, applies conditions, records measurement reports, and advances the
 random-draw cursor; numerical modules manipulate the quantum buffer.
 """
 
+from collections.abc import Callable, Sequence
 from math import prod
 
 import numpy as np
 from numba import njit, prange
 
-from .....noise.nb import _report_digit_kernel
+from ....._backends.steps import (
+    ApplyChannelStep,
+    ApplyMatrixStep,
+    MeasurementStep,
+    ResetStep,
+    ResolvedStep,
+)
+from .....noise.nb import (
+    _compile_channel_table,
+    _compile_readout_table,
+    _report_digit_kernel,
+)
 from .....result import reduce_to_counts
 from ...._execution_contract import (
     RawResult,
     _ExecutionContext as ExecutionContext,
     _InitialEvolutionState as InitialEvolutionState,
 )
-from ...numerics.numba._apply import _apply_resolved_range
+from ...numerics.numba._apply import _DENSE, _apply_resolved_range
 from ...numerics.numba._channel import _apply_channel_step
 from ...numerics.numba._measurement import (
     _sample_index_kernel,
@@ -26,6 +38,190 @@ from ...numerics.numba._measurement import (
     _sv_reset_kernel,
 )
 from ...state import NumbaClassicalState, NumbaEvolutionState, NumbaQuantumState
+
+
+def _plan_compilable(plan: Sequence[ResolvedStep]) -> bool:
+    """Whether the compiled multi-shot kernel understands every plan step.
+
+    The workflow supports matrix, channel, measurement (including readout
+    confusion), and reset steps. It does not yet encode non-identity
+    physical-to-reported measurement maps. An unsupported
+    step or map must not reach ``_compile_dynamic_plan``; the caller falls back
+    to the Python per-shot workflow with the selected numerical runtime.
+    """
+    # pylint: disable-next=fixme
+    # TODO: Compile non-identity ``reported_digit_maps`` into the measurement
+    # table and apply them after physical collapse but before readout confusion.
+    # Until then, keep routing such plans through the semantics-complete Python
+    # per-shot workflow rather than silently reporting the physical digit.
+    return all(
+        isinstance(
+            step, (ApplyMatrixStep, ApplyChannelStep, MeasurementStep, ResetStep)
+        )
+        and not (
+            isinstance(step, MeasurementStep)
+            and step.reported_digit_maps is not None
+            and any(
+                reported_map != tuple(range(len(reported_map)))
+                for reported_map in step.reported_digit_maps
+            )
+        )
+        for step in plan
+    )
+
+
+def _compile_dynamic_plan(
+    plan: Sequence[ResolvedStep],
+    dims: tuple[int, ...],
+    build_apply_plan: Callable[[tuple[int, ...]], tuple],
+    resolve_structure: Callable[[ApplyMatrixStep], tuple],
+) -> tuple[tuple, int]:
+    """Flatten a plan into typed arrays for `_run_sv_trajectories`.
+
+    Uses the supplied numerical layout builder; measurement/reset carry their
+    subsystem strides and dims for in-kernel collapse and reset-shift, while
+    the two noise payloads go to ``noise.nb``: a channel hands its Kraus
+    stack plus that same layout to `_compile_channel_table`, and each
+    measurement hands its confusion tuple to `_compile_readout_table`, whose
+    pointers are indexed by the measured-subsystem position built here.
+
+    Returns the kernel's positional plan arrays and the per-shot uniform-draw
+    budget: one per measurement, one more per confusion-bearing measured
+    subsystem, and one per reset and channel - the upper bound on RNG draws
+    (a conditioned reset or channel that never fires simply draws less).
+    """
+    strides = [prod(dims[:q]) for q in range(len(dims))]
+
+    step_kind: list[int] = []
+    step_data: list[int] = []
+    step_cond_ptr: list[int] = []
+    step_cond_len: list[int] = []
+    cond_clbit: list[int] = []
+    cond_value: list[int] = []
+    ap_mat_ptr, ap_dim, ap_off_ptr, ap_comp_ptr, ap_comp_len = [], [], [], [], []
+    ap_code = []
+    mat_flat, off_flat, comp_stride_flat, comp_dim_flat = [], [], [], []
+    col_flat: list[int] = []
+    val_flat: list[complex] = []
+    me_ptr, me_len, me_classical, me_stride, me_dim = [], [], [], [], []
+    rs_ptr, rs_len, rs_stride, rs_dim = [], [], [], []
+    # Noise payloads, flattened in one pass below by the noise package:
+    # (kraus_ops, offsets, comp_strides, comp_dims) per channel occurrence,
+    # and (num_subsystems, confusions) per measurement - the latter in
+    # measurement order, which is the order me_* is filled in.
+    channel_entries: list[tuple] = []
+    readout_entries: list[tuple] = []
+    num_measurements = 0
+    num_resets = 0
+
+    def add_condition(condition):
+        step_cond_ptr.append(len(cond_clbit))
+        step_cond_len.append(0 if condition is None else len(condition))
+        for clbit, value in condition or ():
+            cond_clbit.append(clbit)
+            cond_value.append(value)
+
+    for step in plan:
+        if isinstance(step, ApplyMatrixStep):
+            offsets, comp_strides, comp_dims, _, _ = build_apply_plan(
+                step.target_indices
+            )
+            step_kind.append(0)
+            step_data.append(len(ap_dim))
+            add_condition(step.condition)
+            ap_dim.append(offsets.shape[0])
+            ap_mat_ptr.append(len(mat_flat))
+            matrix = np.ascontiguousarray(step.matrix, dtype=np.complex128)
+            mat_flat.extend(matrix.ravel().tolist())
+            # Structure resolved once at compile time (declared key or a
+            # single content scan) instead of per gate per shot in-kernel.
+            # col/val ride the same per-gate pointer as the offsets; a
+            # dense gate stores zero padding the kernel never reads.
+            code, columns, values = resolve_structure(step)
+            ap_code.append(code)
+            local_dim = offsets.shape[0]
+            if code == _DENSE:
+                col_flat.extend([0] * local_dim)
+                val_flat.extend([0j] * local_dim)
+            else:
+                col_flat.extend(int(c) for c in columns)
+                val_flat.extend(complex(v) for v in values)
+            ap_off_ptr.append(len(off_flat))
+            off_flat.extend(int(o) for o in offsets)
+            ap_comp_ptr.append(len(comp_stride_flat))
+            ap_comp_len.append(comp_strides.shape[0])
+            comp_stride_flat.extend(int(s) for s in comp_strides)
+            comp_dim_flat.extend(int(d) for d in comp_dims)
+        elif isinstance(step, MeasurementStep):
+            step_kind.append(1)
+            step_data.append(len(me_len))
+            add_condition(None)
+            me_ptr.append(len(me_stride))
+            me_len.append(len(step.measured_indices))
+            for q in step.measured_indices:
+                me_stride.append(strides[q])
+                me_dim.append(dims[q])
+            me_classical.extend(step.classical_indices)
+            readout_entries.append((len(step.measured_indices), step.confusions))
+            num_measurements += 1
+        elif isinstance(step, ApplyChannelStep):
+            offsets, comp_strides, comp_dims, _, _ = build_apply_plan(
+                step.target_indices
+            )
+            step_kind.append(3)
+            step_data.append(len(channel_entries))
+            add_condition(step.condition)
+            channel_entries.append((step.kraus_ops, offsets, comp_strides, comp_dims))
+        else:  # ResetStep
+            step_kind.append(2)
+            step_data.append(len(rs_len))
+            add_condition(step.condition)
+            rs_ptr.append(len(rs_stride))
+            rs_len.append(len(step.reset_indices))
+            for q in step.reset_indices:
+                rs_stride.append(strides[q])
+                rs_dim.append(dims[q])
+            num_resets += 1
+
+    def i64(values):
+        return np.asarray(values, dtype=np.int64)
+
+    me_conf_ptr, conf_flat = _compile_readout_table(readout_entries)
+    plan_arrays = (
+        i64(step_kind),
+        i64(step_data),
+        i64(step_cond_ptr),
+        i64(step_cond_len),
+        i64(cond_clbit),
+        i64(cond_value),
+        i64(ap_mat_ptr),
+        i64(ap_dim),
+        i64(ap_off_ptr),
+        i64(ap_comp_ptr),
+        i64(ap_comp_len),
+        i64(ap_code),
+        np.asarray(mat_flat, dtype=np.complex128),
+        i64(off_flat),
+        i64(col_flat),
+        np.asarray(val_flat, dtype=np.complex128),
+        i64(comp_stride_flat),
+        i64(comp_dim_flat),
+        i64(me_ptr),
+        i64(me_len),
+        i64(me_classical),
+        i64(me_stride),
+        i64(me_dim),
+        me_conf_ptr,
+        conf_flat,
+        i64(rs_ptr),
+        i64(rs_len),
+        i64(rs_stride),
+        i64(rs_dim),
+        *_compile_channel_table(channel_entries),
+    )
+    num_confusions = int(np.count_nonzero(me_conf_ptr >= 0))
+    max_draws = num_measurements + num_confusions + num_resets + len(channel_entries)
+    return plan_arrays, max_draws
 
 
 def _execute_sv_trajectories(
