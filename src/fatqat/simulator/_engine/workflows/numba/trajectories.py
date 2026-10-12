@@ -5,10 +5,18 @@ packed plan, applies conditions, records measurement reports, and advances the
 random-draw cursor; numerical modules manipulate the quantum buffer.
 """
 
+from math import prod
+
 import numpy as np
 from numba import njit, prange
 
 from .....noise.nb import _report_digit_kernel
+from .....result import reduce_to_counts
+from ...._execution_contract import (
+    RawResult,
+    _ExecutionContext as ExecutionContext,
+    _InitialEvolutionState as InitialEvolutionState,
+)
 from ...numerics.numba._apply import _apply_resolved_range
 from ...numerics.numba._channel import _apply_channel_step
 from ...numerics.numba._measurement import (
@@ -18,6 +26,57 @@ from ...numerics.numba._measurement import (
     _sv_reset_kernel,
 )
 from ...state import NumbaClassicalState, NumbaEvolutionState, NumbaQuantumState
+
+
+def _execute_sv_trajectories(
+    context: ExecutionContext,
+    compiled,
+    *,
+    initial_state: InitialEvolutionState[np.ndarray],
+) -> RawResult[np.ndarray]:
+    """Execute a materialized counts plan in one compiled multi-shot call."""
+    plan_arrays, max_draws = compiled
+    shots = context.shots
+    uniforms = np.empty(shots * max_draws, dtype=np.float64)
+    for s, seed_sequence in enumerate(
+        np.random.SeedSequence(context.seed).spawn(shots)
+    ):
+        uniforms[s * max_draws : (s + 1) * max_draws] = np.random.default_rng(
+            seed_sequence
+        ).random(max_draws)
+
+    state_size = prod(context.system_dims) if context.system_dims else 1
+    custom_start = initial_state.quantum is not None
+    # The custom template is read-only: each shot takes the private copy it
+    # evolves. `ascontiguousarray` therefore aliases the validated common
+    # case and copies only when layout or dtype requires it. The default
+    # path passes no O(D) template at all.
+    start = (
+        np.ascontiguousarray(initial_state.quantum, dtype=np.complex128).reshape(
+            state_size
+        )
+        if custom_start
+        else np.empty(0, dtype=np.complex128)
+    )
+    clbits = initial_state.classical.clbits
+    clbits_start = np.asarray(clbits if clbits is not None else (), dtype=np.int64)
+    rows = _run_sv_trajectories(
+        *plan_arrays,
+        start,
+        state_size,
+        custom_start,
+        clbits_start,
+        context.n_clbits,
+        shots,
+        uniforms,
+        max_draws,
+    )
+    outcome_keys, outcome_counts = reduce_to_counts(rows)
+    return RawResult(
+        outcome_keys=outcome_keys,
+        outcome_counts=outcome_counts,
+        state=None,
+    )
 
 
 @njit(cache=True)

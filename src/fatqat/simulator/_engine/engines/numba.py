@@ -114,7 +114,6 @@ from ....noise.nb import (
     _compile_readout_table,
     _jump_branch_kernel,
 )
-from ....result import reduce_to_counts
 from .._execution_policy import _ExecutionPolicy as ExecutionPolicy
 from .._numba_scope import _kernel_thread_workers, _thread_scope
 from ..numerics.numba._apply import (
@@ -160,7 +159,7 @@ from .numpy import (
     NumpySVEngine,
     NumpyUnitaryEngine,
 )
-from ..workflows.numba.trajectories import _run_sv_trajectories
+from ..workflows.numba.trajectories import _execute_sv_trajectories
 
 # Set by `_pack_operator_plan` for a step whose super-operator resolved to a
 # CSR (`_superop_csr`); `_classify_matrix` never returns it.
@@ -529,7 +528,7 @@ class NumbaSVEngine(NumpySVEngine):
                 context, payload, policy, initial_state=initial_state
             )
         with self._execution_scope(policy):
-            return self._run_compiled_multi_shot(
+            return _execute_sv_trajectories(
                 context, payload[2], initial_state=initial_state
             )
 
@@ -621,57 +620,6 @@ class NumbaSVEngine(NumpySVEngine):
             targets,
             max_workers=max_workers,
             force_parallel=force_parallel,
-        )
-
-    def _run_compiled_multi_shot(
-        self,
-        context: ExecutionContext,
-        compiled,
-        *,
-        initial_state: InitialEvolutionState[np.ndarray],
-    ) -> RawResult[np.ndarray]:
-        """Execute a materialized counts plan in one compiled multi-shot call."""
-        plan_arrays, max_draws = compiled
-        shots = context.shots
-        uniforms = np.empty(shots * max_draws, dtype=np.float64)
-        for s, seed_sequence in enumerate(
-            np.random.SeedSequence(context.seed).spawn(shots)
-        ):
-            uniforms[s * max_draws : (s + 1) * max_draws] = np.random.default_rng(
-                seed_sequence
-            ).random(max_draws)
-
-        state_size = prod(self._dims) if self._dims else 1
-        custom_start = initial_state.quantum is not None
-        # The custom template is read-only: each shot takes the private copy it
-        # evolves. `ascontiguousarray` therefore aliases the validated common
-        # case and copies only when layout or dtype requires it. The default
-        # path passes no O(D) template at all.
-        start = (
-            np.ascontiguousarray(initial_state.quantum, dtype=np.complex128).reshape(
-                state_size
-            )
-            if custom_start
-            else np.empty(0, dtype=np.complex128)
-        )
-        clbits = initial_state.classical.clbits
-        clbits_start = np.asarray(clbits if clbits is not None else (), dtype=np.int64)
-        rows = _run_sv_trajectories(
-            *plan_arrays,
-            start,
-            state_size,
-            custom_start,
-            clbits_start,
-            self._n_clbits,
-            shots,
-            uniforms,
-            max_draws,
-        )
-        outcome_keys, outcome_counts = reduce_to_counts(rows)
-        return RawResult(
-            outcome_keys=outcome_keys,
-            outcome_counts=outcome_counts,
-            state=None,
         )
 
     def _compile_dynamic_plan(self, plan: list) -> tuple[tuple, int]:
