@@ -461,11 +461,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         Overrides convert the representation only when needed. Callers copy or
         transfer the result when they need independent storage or host data.
         """
-        return self._export_state_data(self.state)
-
-    def _export_state_data(self, data: QuantumDataT) -> QuantumDataT:
-        """Convert representation when required, retaining runtime storage."""
-        return data
+        return self.state
 
     def _export_evolution_state(self) -> InitialEvolutionState[QuantumDataT]:
         """Export completed local evolution as reusable initialization.

@@ -492,11 +492,12 @@ class NumpySuperopEngine(  # pylint: disable=abstract-method
 
     _allocate = staticmethod(_allocate_superoperator)
 
-    def _export_state_data(self, data: np.ndarray) -> np.ndarray:
+    def export_state(self) -> np.ndarray:
         """Convert NumPy super-operator data to public column stacking.
 
         This existing vectorization conversion does not reorder subsystems.
         """
+        data = self.state
         size = prod(self._dims) if self._dims else 1
         internal = data.reshape((size,) * 4)
         exported = np.empty_like(data, order="C")
