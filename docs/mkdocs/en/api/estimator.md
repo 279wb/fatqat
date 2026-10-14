@@ -78,8 +78,8 @@ sampled run.
 Configure the simulation method, runtime, and noise on the backend. Invalid
 programs, observable widths, and shot values raise
 [`BackendValidationError`][fatqat.errors.BackendValidationError] before a job is returned;
-unsupported observable types raise `TypeError`. Later failures are raised by
-[`result`][fatqat.Job.result].
+unsupported observable types raise `TypeError`. Execution errors follow the
+backend's error-handling policy.
 
 The Estimator forwards `simulation_config` to the backend and accepts the same
 keys as its normal `run()` path. See the canonical tables for
@@ -122,8 +122,8 @@ actual pulse execution reports one.
 
 
 [`run_sweep`][fatqat.Estimator.run_sweep] evaluates binding rows in input order.
-Validation errors raise directly; other row failures are raised by
-[`result`][fatqat.Job.result]. No partial result list is returned. See
+Validation errors raise directly; execution errors follow the backend's
+error-handling policy. No partial result list is returned. See
 [Simulate a quantum program](../guide/simulation.md) for a guided parameter sweep; accepted binding
 shapes and seed behavior are specified here.
 

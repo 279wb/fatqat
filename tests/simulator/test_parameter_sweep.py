@@ -267,7 +267,7 @@ def test_failed_point_execution_produces_failed_outer_job_without_partial_list(
     program.add(ops.RX(theta), 0)
     backend = Simulator()
     error = RuntimeError("point failed")
-    original_execute = backend._execute_plan
+    original_execute = backend._engine.execute
     calls = 0
 
     def fail_on_second(*args, **kwargs):
@@ -277,8 +277,10 @@ def test_failed_point_execution_produces_failed_outer_job_without_partial_list(
             raise error
         return original_execute(*args, **kwargs)
 
-    monkeypatch.setattr(backend, "_execute_plan", fail_on_second)
-    outer = backend.run_sweep(program, {theta: [0.1, 0.2]})
+    monkeypatch.setattr(backend._engine, "execute", fail_on_second)
+    outer = backend.run_sweep(
+        program, {theta: [0.1, 0.2]}, simulation_config={"error_handling": "capture"}
+    )
 
     with pytest.raises(RuntimeError, match="point failed") as caught:
         outer.result()

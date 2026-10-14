@@ -24,8 +24,17 @@ class _SimulationConfig:
     kernel_parallelism: Any = "auto"
     max_workers: Any = None
     fusion: Any = False
+    error_handling: str = "raise"
 
     def __post_init__(self) -> None:
+        if not isinstance(self.error_handling, str) or self.error_handling not in {
+            "raise",
+            "capture",
+        }:
+            raise BackendValidationError(
+                f"unsupported error_handling={self.error_handling!r}; expected "
+                "'raise' or 'capture'"
+            )
         if self.seed is not None and (type(self.seed) is not int):
             raise BackendValidationError(
                 f"seed must be an int or None, got {self.seed!r}"

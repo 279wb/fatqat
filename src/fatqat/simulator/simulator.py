@@ -525,9 +525,8 @@ class Simulator:
         """Validate and execute one program.
 
         The returned job is eager and already terminal. Program and option
-        validation errors normally raise directly. Errors during execution or
-        result assembly are stored on the job, and ``Job.result()`` re-raises
-        the original error.
+        validation errors raise directly. Execution errors follow the
+        ``error_handling`` option described below.
 
         Args:
             program: Program to execute, or an executable compiler result that
@@ -546,15 +545,15 @@ class Simulator:
                 validated. Basis indices use public most-significant-first
                 subsystem order; no basis-order permutation is applied.
                 Operator methods reject an initial state.
-                Shape errors raise directly; runtime array-conversion failures
-                are reported by ``Job.result()``.
+                Shape errors raise directly. Runtime array-conversion failures
+                follow ``error_handling``.
             simulation_config: Optional per-run execution controls. String
                 choices are case-sensitive. Accepted keys are:
 
                 - ``"seed"`` (``int | None``, default ``None``): Use a
                   non-negative sampling seed. Booleans are rejected; ``None``
                   uses fresh entropy. A negative value is rejected during
-                  execution, so ``Job.result()`` raises ``ValueError``. A
+                  execution and follows ``error_handling``. A
                   fixed seed reproduces counts only for the same method,
                   runtime, shot count, parallelism settings, and result
                   requests: on the numba runtime, channel-noise runs select
@@ -575,6 +574,11 @@ class Simulator:
                 - ``"max_workers"`` (``int | None``, default ``None``):
                   Positive concurrency limit. ``None`` uses the runtime
                   limit; ``1`` conflicts with an explicit parallel request.
+                - ``"error_handling"`` (``str``, default ``"raise"``):
+                  ``"raise"`` propagates execution and result-assembly errors
+                  immediately. ``"capture"`` returns a failed job whose
+                  ``result()`` re-raises the original exception. Input and
+                  execution-policy validation always raise directly.
                 - ``"fusion"`` (``bool``, default ``False``): Whether to
                   combine compatible adjacent operations. ``True`` requires
                   Numba with ``density_matrix``, ``unitary``, or ``superop``.
@@ -655,9 +659,8 @@ class Simulator:
         realizations plus execution - layout resolution, implementation
         selection, and noise matching are not repeated per row. One explicit
         seed is reused for every row, so sampled row errors can be correlated.
-        Binding and row-validation errors raise directly. If execution fails
-        for a row, the returned sweep job is failed and its ``result()`` method
-        re-raises the error; no partial list is exposed.
+        Binding and row-validation errors raise directly. Execution errors
+        follow ``run()``'s error-handling policy; no partial list is exposed.
 
         Args:
             program: Parameterized template program.
@@ -675,8 +678,7 @@ class Simulator:
                 - ``"seed"`` (``int | None``, default ``None``): Use a
                   non-negative sampling seed; booleans are rejected. ``None``
                   uses fresh entropy for each row. A negative value fails
-                  during execution, so the sweep job's ``result()`` raises
-                  ``ValueError``.
+                  during execution and follows ``error_handling``.
                 - ``"shot_parallelism"`` (``str``, default ``"auto"``):
                   ``"auto"``, ``"serial"``, ``"threads"``, or
                   ``"processes"``. Explicit parallel modes require an
@@ -688,6 +690,8 @@ class Simulator:
                 - ``"max_workers"`` (``int | None``, default ``None``):
                   Positive concurrency limit. ``None`` uses the runtime
                   limit; ``1`` conflicts with an explicit parallel request.
+                - ``"error_handling"``: Same values, default, and behavior as
+                  ``run()``.
                 - ``"fusion"`` (``bool``, default ``False``): Whether to
                   combine compatible operations. ``True`` requires Numba with
                   ``density_matrix``, ``unitary``, or ``superop``.
@@ -767,9 +771,12 @@ class Simulator:
             # Rule and shape failures raise directly here, exactly as they
             # raise directly from lowering in run().
             point_plan = template.materialize(theta)
+            point_job = self._execute_plan(point_plan, prepared)
             try:
-                results.append(self._execute_plan(point_plan, prepared).result())
+                results.append(point_job.result())
             except Exception as exc:  # execution-stage failure
+                if prepared.simulation.error_handling == "raise":
+                    raise
                 return Job(status="ERROR", error=exc)
         return Job(status="DONE", result=results)
 
@@ -911,6 +918,8 @@ class Simulator:
                 ),
             )
         except Exception as exc:
+            if execution.simulation.error_handling == "raise":
+                raise
             return Job(status="ERROR", error=exc)
 
     def _prepare_expectation(
@@ -1223,7 +1232,8 @@ class Simulator:
         ``plan`` is ``prepared.plan`` for an ordinary run, or one row's
         materialized plan in a sweep. The execution policy is resolved per
         plan because compiled multi-shot compatibility depends on the concrete
-        steps. Execution and result-assembly failures become a failed job.
+        steps. Error handling controls whether execution and result-assembly
+        failures propagate or become a failed job.
         """
         request = prepared.request
         policy = self._resolve_plan_policy(
@@ -1250,6 +1260,8 @@ class Simulator:
             )
             return Job(status="DONE", result=result)
         except Exception as exc:  # execution-stage failure
+            if prepared.simulation.error_handling == "raise":
+                raise
             return Job(status="ERROR", error=exc)
 
     def _resolve_plan_policy(

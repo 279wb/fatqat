@@ -65,8 +65,8 @@ class Estimator:
         """Evaluate one or more observables on a program.
 
         Program, observable, shot, and backend capability validation errors
-        raise before a job is returned. Execution failures stay on the
-        returned job with the backend's original exception object.
+        raise before a job is returned. Execution errors follow the backend's
+        error-handling policy.
 
         Args:
             program: Fully bound, measurement-free program containing only
@@ -151,8 +151,8 @@ class Estimator:
         """Evaluate a complete parameter batch in input order.
 
         Each binding row produces an estimator result. Validation errors raise
-        directly. Other row failures make the returned job fail without
-        exposing a partial result list.
+        directly. Execution errors follow the backend's error policy. A failed
+        row never exposes a partial result list.
 
         Args:
             program: Parameterized template program.

@@ -186,6 +186,7 @@ def test_numba_kernel_thread_scope_expands_and_restores(fail, monkeypatch):
         "shot_parallelism": "serial",
         "kernel_parallelism": "threads",
         "max_workers": expected,
+        "error_handling": "capture",
     }
 
     try:
@@ -238,5 +239,6 @@ def test_metadata_echoes_only_the_requested_public_configuration():
         "kernel_parallelism": "auto",
         "max_workers": None,
         "fusion": False,
+        "error_handling": "raise",
     }
     assert "execution" not in result.metadata

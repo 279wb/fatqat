@@ -51,6 +51,8 @@ from fatqat.simulator import Simulator
             "max_workers=1 contradicts",
         ),
         ({"fusion": None}, "fusion must be a bool"),
+        ({"error_handling": "ignore"}, "unsupported error_handling"),
+        ({"error_handling": []}, "unsupported error_handling"),
     ],
 )
 def test_public_execution_configuration_rejects_invalid_values(config, match):
@@ -121,28 +123,60 @@ def test_engine_support_validates_execution_controls(
             backend.run(program, simulation_config=config)
 
 
-def test_materialization_failure_belongs_to_the_job(monkeypatch):
+@pytest.mark.parametrize("mode", [None, "raise", "capture"])
+@pytest.mark.parametrize(
+    "request_kind", ["run", "sweep", "expectation", "sampled_expectation"]
+)
+def test_execution_error_handling(monkeypatch, mode, request_kind):
     backend = Simulator("SV", runtime="numpy")
-    original = backend._engine.materialize_execution
-    first = True
+    error = RuntimeError("materialization failed")
 
-    def fail_once(*args, **kwargs):
-        nonlocal first
-        if first:
-            first = False
-            raise RuntimeError("materialization failed")
-        return original(*args, **kwargs)
+    def fail(*_args, **_kwargs):
+        raise error
 
-    monkeypatch.setattr(backend._engine, "materialize_execution", fail_once)
-    job = backend.run(fq.Program(1))
+    monkeypatch.setattr(backend._engine, "materialize_execution", fail)
+    config = {} if mode is None else {"error_handling": mode}
+    program = fq.Program(1)
+    theta = fq.Parameter("theta")
+    program.add(ops.RX(theta if request_kind == "sweep" else 0.1), 0)
 
-    with pytest.raises(RuntimeError, match="materialization failed"):
-        job.result()
+    def run():
+        if request_kind == "sweep":
+            return backend.run_sweep(
+                program, {theta: [0.1, 0.2]}, simulation_config=config
+            )
+        if request_kind in {"expectation", "sampled_expectation"}:
+            return fq.Estimator(backend).run(
+                program,
+                fq.Observable([("Z", 1.0)]),
+                shots=8 if request_kind == "sampled_expectation" else 0,
+                simulation_config=config,
+            )
+        return backend.run(program, simulation_config=config)
 
-    assert backend.run(fq.Program(1)).result().get_statevector().tolist() == [
-        1 + 0j,
-        0j,
-    ]
+    if mode == "capture":
+        job = run()
+        with pytest.raises(RuntimeError) as caught:
+            job.result()
+    else:
+        with pytest.raises(RuntimeError) as caught:
+            run()
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("sweep", [False, True])
+def test_capture_does_not_capture_execution_policy_validation(sweep):
+    backend = Simulator("SV", runtime="numpy")
+    theta = fq.Parameter("theta")
+    program = fq.Program(1)
+    program.add(ops.RX(theta if sweep else 0.1), 0)
+    config = {"error_handling": "capture", "shot_parallelism": "processes"}
+
+    with pytest.raises(BackendValidationError, match="requires independent per-shot"):
+        if sweep:
+            backend.run_sweep(program, {theta: [0.1]}, simulation_config=config)
+        else:
+            backend.run(program, simulation_config=config)
 
 
 @pytest.mark.parametrize("operation", ["measurement", "condition"])

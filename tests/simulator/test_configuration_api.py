@@ -100,6 +100,7 @@ def test_simulation_and_result_configuration_are_separate():
         "kernel_parallelism": "serial",
         "max_workers": None,
         "fusion": False,
+        "error_handling": "raise",
     }
 
 
@@ -151,11 +152,16 @@ def test_request_validation_precedes_backend_specific_config_validation():
         )
 
 
-def test_result_assembly_failure_belongs_to_the_job():
-    job = _FailingAssemblyBackend().run(fq.Program(1))
-
-    with pytest.raises(RuntimeError, match="result assembly failed"):
-        job.result()
+@pytest.mark.parametrize("mode", ["raise", "capture"])
+def test_result_assembly_error_handling(mode):
+    backend = _FailingAssemblyBackend()
+    if mode == "capture":
+        job = backend.run(fq.Program(1), simulation_config={"error_handling": mode})
+        with pytest.raises(RuntimeError, match="result assembly failed"):
+            job.result()
+    else:
+        with pytest.raises(RuntimeError, match="result assembly failed"):
+            backend.run(fq.Program(1), simulation_config={"error_handling": mode})
 
 
 @pytest.mark.parametrize(

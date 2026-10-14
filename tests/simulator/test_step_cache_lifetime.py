@@ -193,7 +193,7 @@ def test_next_plan_releases_cache_data_after_execution_failure(monkeypatch):
     program.add(ops.RY(0.1), 0)
     with monkeypatch.context() as patch:
         patch.setattr(backend._engine, "apply", fail_after_apply)
-        job = backend.run(program)
+        job = backend.run(program, simulation_config={"error_handling": "capture"})
         with pytest.raises(RuntimeError, match="execution failed"):
             job.result()
         del job
