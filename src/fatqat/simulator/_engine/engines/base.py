@@ -103,11 +103,9 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
     def _plan_execution(
         self,
         plan: Sequence[ResolvedStep],
-        simulation_config: SimulationConfig,
         *,
-        counts_requested: bool,
-        state_requested: bool,
-        shots: int,
+        context: ExecutionContext,
+        simulation_config: SimulationConfig,
         initial_state: InitialEvolutionState[QuantumDataT],
     ) -> ExecutionPolicy:
         """Validate the request and choose its workflow and scheduling.
@@ -203,10 +201,8 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         """Plan, materialize, and execute one requested evolution."""
         policy = self._plan_execution(
             plan,
-            simulation_config,
-            counts_requested=context.request.counts,
-            state_requested=context.request.final_state,
-            shots=context.shots,
+            context=context,
+            simulation_config=simulation_config,
             initial_state=initial_state,
         )
         return self._execute_plan(plan, context, policy, initial_state)
@@ -226,10 +222,8 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         """
         policy = self._plan_execution(
             plan,
-            simulation_config,
-            counts_requested=context.request.counts,
-            state_requested=context.request.final_state,
-            shots=context.shots,
+            context=context,
+            simulation_config=simulation_config,
             initial_state=initial_state,
         )
         if not observables:

@@ -65,6 +65,7 @@ import numpy as np
 
 from ...._expectation import expectation_density_matrix, expectation_statevector
 from ..._execution_contract import (
+    _ExecutionContext as ExecutionContext,
     _InitialEvolutionState as InitialEvolutionState,
     _SimulationConfig as SimulationConfig,
     _KernelCapabilities,
@@ -121,11 +122,9 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
     def _plan_execution(
         self,
         plan: Sequence[ResolvedStep],
-        simulation_config: SimulationConfig,
         *,
-        counts_requested: bool,
-        state_requested: bool,
-        shots: int,
+        context: ExecutionContext,
+        simulation_config: SimulationConfig,
         initial_state: InitialEvolutionState[np.ndarray],
     ) -> ExecutionPolicy:
         """Choose Python sequencing with the engine's kernel/process scheduling.
@@ -141,18 +140,18 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
         _validate_shot_parallelism(
             simulation_config,
             execution_path=execution_path,
-            counts_requested=counts_requested,
-            state_requested=state_requested,
-            shots=shots,
+            counts_requested=context.request.counts,
+            state_requested=context.request.final_state,
+            shots=context.shots,
         )
         return _resolve_python_workflow_scheduling(
             simulation_config,
             execution_path=execution_path,
-            counts_requested=counts_requested,
-            state_requested=state_requested,
+            counts_requested=context.request.counts,
+            state_requested=context.request.final_state,
             capabilities=self.capabilities.kernels,
             supports_process_shots=self.capabilities.supports_process_shots,
-            shots=shots,
+            shots=context.shots,
         )
 
     def initialize(

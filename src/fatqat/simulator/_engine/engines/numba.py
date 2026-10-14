@@ -199,11 +199,9 @@ class NumbaSVEngine(NumpySVEngine):
     def _plan_execution(
         self,
         plan: Sequence[ResolvedStep],
-        simulation_config: SimulationConfig,
         *,
-        counts_requested: bool,
-        state_requested: bool,
-        shots: int,
+        context: ExecutionContext,
+        simulation_config: SimulationConfig,
         initial_state: InitialEvolutionState[np.ndarray],
     ) -> ExecutionPolicy:
         """Choose compiled trajectories or Python sequencing with Numba kernels.
@@ -220,9 +218,9 @@ class NumbaSVEngine(NumpySVEngine):
         _validate_shot_parallelism(
             simulation_config,
             execution_path=execution_path,
-            counts_requested=counts_requested,
-            state_requested=state_requested,
-            shots=shots,
+            counts_requested=context.request.counts,
+            state_requested=context.request.final_state,
+            shots=context.shots,
         )
         shot_request = simulation_config.shot_parallelism
         kernel_request = simulation_config.kernel_parallelism
@@ -232,11 +230,11 @@ class NumbaSVEngine(NumpySVEngine):
             shot_request == "processes"
             or kernel_request == "threads"
             or (shot_request == "serial" and kernel_request == "auto")
-            or shots <= 1
+            or context.shots <= 1
             or execution_path
             != "per_shot"  # Plan not supported by compiled trajectories.
-            or not counts_requested
-            or state_requested
+            or not context.request.counts
+            or context.request.final_state
             or initial_state.classical.occupied is not None
             or not _plan_compilable(plan)
         )
@@ -244,11 +242,11 @@ class NumbaSVEngine(NumpySVEngine):
             return _resolve_python_workflow_scheduling(
                 simulation_config,
                 execution_path=execution_path,
-                counts_requested=counts_requested,
-                state_requested=state_requested,
+                counts_requested=context.request.counts,
+                state_requested=context.request.final_state,
                 capabilities=self.capabilities.kernels,
                 supports_process_shots=self.capabilities.supports_process_shots,
-                shots=shots,
+                shots=context.shots,
             )
 
         # This compiled workflow owns the shot loop and calls serial kernels.
@@ -748,11 +746,9 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
     def _plan_execution(
         self,
         plan: Sequence[ResolvedStep],
-        simulation_config: SimulationConfig,
         *,
-        counts_requested: bool,
-        state_requested: bool,
-        shots: int,
+        context: ExecutionContext,
+        simulation_config: SimulationConfig,
         initial_state: InitialEvolutionState[np.ndarray],
     ) -> ExecutionPolicy:
         """Choose compiled operator sequencing with serial or threaded kernels.
@@ -764,9 +760,9 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
         _validate_shot_parallelism(
             simulation_config,
             execution_path=execution_path,
-            counts_requested=counts_requested,
-            state_requested=state_requested,
-            shots=shots,
+            counts_requested=context.request.counts,
+            state_requested=context.request.final_state,
+            shots=context.shots,
         )
         kernel_strategy, workers = _resolve_kernel_scheduling(
             simulation_config.kernel_parallelism,
