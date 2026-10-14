@@ -79,43 +79,11 @@ class _SimulationConfig:
 
 
 @dataclass(frozen=True)
-class _StateVectorResultRequest:
-    """Resolved result fields requested for one statevector execution."""
+class _ResultRequest:
+    """Resolved outputs requested from an engine in its own representation."""
 
     counts: bool
-    statevector: bool
-
-
-@dataclass(frozen=True)
-class _DensityMatrixResultRequest:
-    """Resolved result fields requested for one density-matrix execution."""
-
-    counts: bool
-    density_matrix: bool
-
-
-@dataclass(frozen=True)
-class _UnitaryResultRequest:
-    """Resolved result fields requested for one unitary execution."""
-
-    counts: bool
-    unitary: bool
-
-
-@dataclass(frozen=True)
-class _SuperopResultRequest:
-    """Resolved result fields requested for one super-operator execution."""
-
-    counts: bool
-    superop: bool
-
-
-_ResultRequest = (
-    _StateVectorResultRequest
-    | _DensityMatrixResultRequest
-    | _UnitaryResultRequest
-    | _SuperopResultRequest
-)
+    final_state: bool
 
 
 @dataclass(frozen=True)

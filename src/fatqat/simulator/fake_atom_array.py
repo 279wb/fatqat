@@ -48,7 +48,11 @@ if TYPE_CHECKING:
     from ..observable import Observable
     from .._backends.backend_utils import _LoweringContext
     from .planning import _MatrixRecipe
-    from .simulator import ProgramInstruction, _PreparedExecution, _PreparedExpectation
+    from .simulator import (
+        ProgramInstruction,
+        _PreparedExecution,
+        _BoundExpectationOccurrence,
+    )
     from .._backends.steps import ResolvedStep
 
 
@@ -279,12 +283,12 @@ class AtomArraySimulator(Simulator):
         observables: tuple[Observable, ...],
         *,
         shots: int,
-    ) -> _PreparedExpectation:
+    ) -> tuple[tuple[float, ...], tuple[_BoundExpectationOccurrence, ...]]:
         if any(isinstance(step, LossStep) for step in execution.plan):
             raise UnsupportedOperationError(
                 "expectation values are undefined for programs containing carrier loss"
             )
-        prepared = super()._prepare_expectation(
+        constants, bound_occurrences = super()._prepare_expectation(
             execution, program, observables, shots=shots
         )
         classical = execution.initial_state.classical
@@ -300,7 +304,7 @@ class AtomArraySimulator(Simulator):
                 ):
                     occupied.update(step.target_indices)
             lowering = execution.lowering
-            for bound in prepared.bound_occurrences:
+            for bound in bound_occurrences:
                 for index, letter in bound.engine_factors:
                     if index not in occupied:
                         operand = lowering.engine_allocation.device_operands[index]
@@ -308,7 +312,7 @@ class AtomArraySimulator(Simulator):
                         raise UnsupportedOperationError(
                             f"observable factor {letter} targets unoccupied atom {ref!r}"
                         )
-        return prepared
+        return constants, bound_occurrences
 
     def _lower_segment(
         self,

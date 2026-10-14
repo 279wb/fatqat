@@ -22,6 +22,7 @@ from fatqat.noise import (
 )
 from fatqat.simulator._engine.engines.numpy import NumpySVEngine
 from fatqat.simulator._execution_contract import (
+    _ResultRequest,
     _ExecutionContext,
     _InitialEvolutionState,
 )
@@ -571,7 +572,7 @@ def test_numba_compiled_multi_shot_plan_matches_numpy_channels():
 
     # Direct engine execution below supplies an explicit private serial policy.
     shots = 400
-    request = backend._request_cls(counts=True, statevector=False)
+    request = _ResultRequest(counts=True, final_state=False)
     counts = {}
     for cls in (NumpySVEngine, NumbaSVEngine):
         simulator = cls()

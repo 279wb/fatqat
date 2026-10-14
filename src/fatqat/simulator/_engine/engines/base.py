@@ -205,7 +205,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
             plan,
             simulation_config,
             counts_requested=context.request.counts,
-            state_requested=getattr(context.request, self._state_field),
+            state_requested=context.request.final_state,
             shots=context.shots,
             initial_state=initial_state,
         )
@@ -228,7 +228,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
             plan,
             simulation_config,
             counts_requested=context.request.counts,
-            state_requested=getattr(context.request, self._state_field),
+            state_requested=context.request.final_state,
             shots=context.shots,
             initial_state=initial_state,
         )
@@ -291,7 +291,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         assert policy.shot_strategy != "processes"
         self.configure_system(context.system_dims, context.n_clbits)
         with self._execution_scope(policy):
-            state_requested = getattr(context.request, self._state_field)
+            state_requested = context.request.final_state
             rows = None
             if policy.execution_path == "per_shot":
                 rows = self._run_per_shot(

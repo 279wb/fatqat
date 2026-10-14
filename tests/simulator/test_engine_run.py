@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from fatqat.simulator._execution_contract import (
-    _StateVectorResultRequest,
+    _ResultRequest,
     _SimulationConfig,
     _ExecutionContext,
     _InitialEvolutionState,
@@ -81,7 +81,7 @@ def test_numba_trajectory_execution_handles_supported_and_fallback_plans(with_lo
     context = _context(
         n_clbits=1,
         shots=4,
-        request=_StateVectorResultRequest(counts=True, statevector=False),
+        request=_ResultRequest(counts=True, final_state=False),
     )
     result = engine.execute(
         plan,
@@ -103,7 +103,7 @@ def test_engine_fast_counts_returns_arrays():
     context = _context(
         n_clbits=1,
         shots=4,
-        request=_StateVectorResultRequest(counts=True, statevector=False),
+        request=_ResultRequest(counts=True, final_state=False),
     )
 
     result = _run(engine, plan, context)
@@ -121,7 +121,7 @@ def test_engine_fast_counts_and_state_share_collapse_event():
         n_clbits=1,
         shots=1,
         seed=2026,
-        request=_StateVectorResultRequest(counts=True, statevector=True),
+        request=_ResultRequest(counts=True, final_state=True),
     )
 
     result = _run(engine, plan, context)
@@ -158,7 +158,7 @@ def test_occupancy_loss_reload_and_feedback_start_fresh(runtime, occupied, repor
     context = _context(
         n_clbits=3,
         shots=4,
-        request=_StateVectorResultRequest(counts=True, statevector=False),
+        request=_ResultRequest(counts=True, final_state=False),
     )
     initial = _InitialEvolutionState(
         classical=_InitialClassicalState(occupied=occupied)
@@ -211,7 +211,7 @@ def test_initial_register_drives_feedback_and_is_fresh_per_shot(mode):
     context = _context(
         n_clbits=2,
         shots=8,
-        request=_StateVectorResultRequest(counts=True, statevector=False),
+        request=_ResultRequest(counts=True, final_state=False),
     )
     result = engine.execute(
         tuple(plan),
@@ -236,7 +236,7 @@ def test_fast_counts_preserve_unwritten_initial_digits(measure):
     context = _context(
         n_clbits=2,
         shots=4,
-        request=_StateVectorResultRequest(counts=True, statevector=False),
+        request=_ResultRequest(counts=True, final_state=False),
     )
     plan = [MeasurementStep((0,), (0,))] if measure else []
 
@@ -306,7 +306,7 @@ def test_numba_initial_occupancy_preserves_erased_measurement():
     context = _context(
         n_clbits=1,
         shots=4,
-        request=_StateVectorResultRequest(counts=True, statevector=False),
+        request=_ResultRequest(counts=True, final_state=False),
     )
     result = engine.execute(
         plan,

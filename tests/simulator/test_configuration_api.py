@@ -43,16 +43,13 @@ class _ExtendedResultBackend(Simulator):
     _result_config_cls = _ExtendedResultConfig
     _simulation_config_cls = _ExtendedSimulationConfig
 
-    def _prepare_run(self, prepared, *, shots, result_config):
-        prepared = super()._prepare_run(
-            prepared, shots=shots, result_config=result_config
+    def _prepare_run(self, execution, *, shots, result_config):
+        config, context = super()._prepare_run(
+            execution, shots=shots, result_config=result_config
         )
-        if (
-            prepared.config.hardware_trace
-            and prepared.simulation.maximum_walkers is None
-        ):
+        if config.hardware_trace and execution.simulation.maximum_walkers is None:
             raise BackendValidationError("hardware_trace requires maximum_walkers")
-        return prepared
+        return config, context
 
     def _additional_result_data(self, *, config, simulation, raw):
         if config.hardware_trace:

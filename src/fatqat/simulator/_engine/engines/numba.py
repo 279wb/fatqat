@@ -855,11 +855,7 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
                         payload.scratch_rows,
                     )
                 self._state = flat.reshape(operator.shape)
-            state = (
-                self.export_state()
-                if getattr(context.request, self._state_field)
-                else None
-            )
+            state = self.export_state() if context.request.final_state else None
             return RawResult(state=state)
 
     def _operator_row_dims(self) -> tuple[int, ...]:

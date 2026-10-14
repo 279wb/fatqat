@@ -3,7 +3,7 @@
 import numpy as np
 
 from fatqat.simulator._execution_contract import (
-    _StateVectorResultRequest,
+    _ResultRequest,
     _ExecutionContext,
     _InitialEvolutionState,
 )
@@ -31,7 +31,7 @@ def test_reported_digit_mapping_precedes_confusion_and_feedforward():
         ApplyMatrixStep(matrix=x, target_indices=(1,), condition=((0, 0),)),
     )
     context = _ExecutionContext(
-        request=_StateVectorResultRequest(counts=True, statevector=True),
+        request=_ResultRequest(counts=True, final_state=True),
         system_dims=(3, 2),
         n_clbits=1,
         shots=1,

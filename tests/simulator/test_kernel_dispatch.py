@@ -14,6 +14,7 @@ from fatqat.simulator import Simulator
 from fatqat._backends.steps import ApplyChannelStep, ApplyMatrixStep, BuiltinKernelKey
 from fatqat.implementation import default_matrix_implementation_map
 from fatqat.simulator._execution_contract import (
+    _ResultRequest,
     _ExecutionContext,
     _InitialEvolutionState,
 )
@@ -157,7 +158,7 @@ def _counts(engine_cls, plan, dims, n_clbits, shots, seed, request):
 def _plan_and_request(program):
     backend = Simulator()
     plan, _facts = backend._lower_program(program)
-    return plan, backend._request_cls(counts=True, statevector=False)
+    return plan, _ResultRequest(counts=True, final_state=False)
 
 
 def test_keyed_dispatch_matches_numpy_across_structure_classes():
