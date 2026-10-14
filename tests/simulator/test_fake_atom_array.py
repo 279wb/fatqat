@@ -7,6 +7,8 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+from fatqat.simulator._engine._execution_policy import _select_execution_path
+
 import fatqat.operations as ops
 from fatqat._backends.steps import ApplyMatrixStep, LossStep, PutStep
 from fatqat.simulator import AtomArraySimulator, Simulator
@@ -229,8 +231,10 @@ def test_atom_lifecycle_translates_to_common_facts():
 
     backend = AtomArraySimulator()
     _plan, facts = backend._prepare_program(program)
-    execution_path = backend._engine._select_execution_path(
-        _plan, initial_state=backend._prepare_initial_state(None)
+    execution_path = _select_execution_path(
+        _plan,
+        quantum_capabilities=backend._engine.capabilities.quantum,
+        initial_state=backend._prepare_initial_state(None),
     )
 
     assert execution_path == "per_shot"
@@ -246,8 +250,10 @@ def test_atom_loss_translates_to_stochastic_per_shot_execution():
 
     backend = AtomArraySimulator(noise=noise)
     _plan, facts = backend._prepare_program(program)
-    execution_path = backend._engine._select_execution_path(
-        _plan, initial_state=backend._prepare_initial_state(None)
+    execution_path = _select_execution_path(
+        _plan,
+        quantum_capabilities=backend._engine.capabilities.quantum,
+        initial_state=backend._prepare_initial_state(None),
     )
 
     assert execution_path == "per_shot"
@@ -270,8 +276,10 @@ def test_atom_extension_steps_preserve_conditions(step_kind, step_type):
 
     backend = AtomArraySimulator(noise=noise)
     plan, _facts = backend._lower_program(program)
-    execution_path = backend._engine._select_execution_path(
-        plan, initial_state=backend._prepare_initial_state(None)
+    execution_path = _select_execution_path(
+        plan,
+        quantum_capabilities=backend._engine.capabilities.quantum,
+        initial_state=backend._prepare_initial_state(None),
     )
     extension = next(step for step in plan if isinstance(step, step_type))
 
@@ -288,8 +296,10 @@ def test_atom_measurement_uses_per_shot_execution():
 
     backend = AtomArraySimulator()
     _plan, facts = backend._lower_program(program)
-    execution_path = backend._engine._select_execution_path(
-        _plan, initial_state=backend._prepare_initial_state(None)
+    execution_path = _select_execution_path(
+        _plan,
+        quantum_capabilities=backend._engine.capabilities.quantum,
+        initial_state=backend._prepare_initial_state(None),
     )
 
     assert execution_path == "per_shot"

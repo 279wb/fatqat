@@ -77,7 +77,12 @@ from ...._backends.steps import (
     ApplyMatrixStep,
     ResolvedStep,
 )
-from .._execution_policy import _ExecutionPolicy as ExecutionPolicy
+from .._execution_policy import (
+    _ExecutionPolicy as ExecutionPolicy,
+    _resolve_python_workflow_scheduling,
+    _select_execution_path,
+    _validate_shot_parallelism,
+)
 from .base import MatrixEngine
 from ..numerics.numpy import (
     _ChannelRouteCache,
@@ -113,19 +118,42 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
     Subclasses supply representation-specific numerical operations.
     """
 
-    def _select_workflow(
+    def plan_execution(
         self,
         plan: Sequence[ResolvedStep],
         simulation_config: SimulationConfig,
         *,
-        execution_path: str,
         counts_requested: bool,
         state_requested: bool,
         shots: int,
         initial_state: InitialEvolutionState[np.ndarray],
-    ) -> tuple[str, bool]:
-        """Use shared Python execution for states and operators."""
-        return "python", False
+    ) -> ExecutionPolicy:
+        """Choose Python sequencing with the engine's kernel/process scheduling.
+
+        Local shots run serially; eligible batches may run in processes.
+        Kernel threading follows the concrete engine's capabilities and controls.
+        """
+        execution_path = _select_execution_path(
+            plan,
+            quantum_capabilities=self.capabilities.quantum,
+            initial_state=initial_state,
+        )
+        _validate_shot_parallelism(
+            simulation_config,
+            execution_path=execution_path,
+            counts_requested=counts_requested,
+            state_requested=state_requested,
+            shots=shots,
+        )
+        return _resolve_python_workflow_scheduling(
+            simulation_config,
+            execution_path=execution_path,
+            counts_requested=counts_requested,
+            state_requested=state_requested,
+            capabilities=self.capabilities.kernels,
+            supports_process_shots=self.capabilities.supports_process_shots,
+            shots=shots,
+        )
 
     def initialize(
         self,

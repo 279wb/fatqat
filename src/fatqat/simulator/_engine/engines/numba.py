@@ -112,7 +112,16 @@ from ...._backends.steps import (
 )
 from ....noise.nb import _jump_branch_kernel
 from ....result import reduce_to_counts
-from .._execution_policy import _ExecutionPolicy as ExecutionPolicy
+from ....errors import BackendValidationError
+from .._execution_policy import (
+    _ExecutionPolicy as ExecutionPolicy,
+    _resolve_kernel_scheduling,
+    _resolve_python_workflow_scheduling,
+    _select_execution_path,
+    _validate_shot_parallelism,
+    _explicit_thread_worker_ceiling,
+    _adaptive_thread_worker_ceiling,
+)
 from .._numba_scope import _kernel_thread_workers, _thread_scope
 from ..numerics.numba._apply import (
     _classify_matrix,
@@ -187,36 +196,92 @@ class NumbaSVEngine(NumpySVEngine):
         supports_process_shots=True,
     )
 
-    def _select_workflow(
+    def plan_execution(
         self,
         plan: Sequence[ResolvedStep],
         simulation_config: SimulationConfig,
         *,
-        execution_path: str,
         counts_requested: bool,
         state_requested: bool,
         shots: int,
         initial_state: InitialEvolutionState[np.ndarray],
-    ) -> tuple[str, bool]:
-        """Choose Python or whole-trajectory Numba execution for this request."""
+    ) -> ExecutionPolicy:
+        """Choose compiled trajectories or Python sequencing with Numba kernels.
+
+        Eligible repeated trajectories use the compiled loop with serial inner
+        kernels and serial or threaded shots. Other requests use shared Python
+        scheduling, including process replay and threading within kernels.
+        """
+        execution_path = _select_execution_path(
+            plan,
+            quantum_capabilities=self.capabilities.quantum,
+            initial_state=initial_state,
+        )
+        _validate_shot_parallelism(
+            simulation_config,
+            execution_path=execution_path,
+            counts_requested=counts_requested,
+            state_requested=state_requested,
+            shots=shots,
+        )
         shot_request = simulation_config.shot_parallelism
         kernel_request = simulation_config.kernel_parallelism
-        can_select_numba = (
-            shot_request == "threads"
-            or (shot_request == "serial" and kernel_request == "serial")
-            or (shot_request == "auto" and kernel_request != "threads")
+        # Explicit processes and kernel threads use Python replay. With serial
+        # shots, preserve adaptive kernel execution unless kernels are also serial.
+        use_python = (
+            shot_request == "processes"
+            or kernel_request == "threads"
+            or (shot_request == "serial" and kernel_request == "auto")
+            or shots <= 1
+            or execution_path
+            != "per_shot"  # Plan not supported by compiled trajectories.
+            or not counts_requested
+            or state_requested
+            or initial_state.classical.occupied is not None
+            or not _plan_compilable(plan)
         )
-        if (
-            can_select_numba
-            and shots > 1
-            and execution_path == "per_shot"
-            and counts_requested
-            and not state_requested
-            and initial_state.classical.occupied is None
-            and _plan_compilable(plan)
-        ):
-            return "numba_trajectories", True
-        return "python", False
+        if use_python:
+            return _resolve_python_workflow_scheduling(
+                simulation_config,
+                execution_path=execution_path,
+                counts_requested=counts_requested,
+                state_requested=state_requested,
+                capabilities=self.capabilities.kernels,
+                supports_process_shots=self.capabilities.supports_process_shots,
+                shots=shots,
+            )
+
+        # This compiled workflow owns the shot loop and calls serial kernels.
+        # Auto prefers this loop even when the worker ceiling makes it serial.
+        kernels = self.capabilities.kernels
+        if shot_request == "threads":
+            workers = _explicit_thread_worker_ceiling(
+                simulation_config.max_workers, kernels
+            )
+            if workers < 2:
+                raise BackendValidationError(
+                    "shot_parallelism='threads' requires an effective thread "
+                    "capacity of at least two"
+                )
+            shot_strategy = "threads"
+        elif shot_request == "serial":
+            shot_strategy, workers = "serial", 1
+        else:
+            workers = _adaptive_thread_worker_ceiling(
+                simulation_config.max_workers, kernels
+            )
+            if kernels.thread_capacity >= 2 and (workers is None or workers > 1):
+                shot_strategy = "threads"
+            else:
+                shot_strategy, workers = "serial", 1
+        return ExecutionPolicy(
+            execution_path=execution_path,
+            shot_strategy=shot_strategy,
+            kernel_strategy="serial",
+            worker_limit=workers,
+            fusion=simulation_config.fusion,
+            workflow="numba_trajectories",
+        )
 
     def __init__(self, name: str = "numba-sv"):
         super().__init__(name)
@@ -680,19 +745,42 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
     `_operator_payloads`.
     """
 
-    def _select_workflow(
+    def plan_execution(
         self,
         plan: Sequence[ResolvedStep],
         simulation_config: SimulationConfig,
         *,
-        execution_path: str,
         counts_requested: bool,
         state_requested: bool,
         shots: int,
         initial_state: InitialEvolutionState[np.ndarray],
-    ) -> tuple[str, bool]:
-        """Use the Numba whole-plan executor for operator evolution."""
-        return "numba_operator", False
+    ) -> ExecutionPolicy:
+        """Choose compiled operator sequencing with serial or threaded kernels.
+
+        Operator evolution has no independent shots. Shared scheduling resolves
+        the kernel controls and worker limit for the whole-plan operator loop.
+        """
+        execution_path = "operator"
+        _validate_shot_parallelism(
+            simulation_config,
+            execution_path=execution_path,
+            counts_requested=counts_requested,
+            state_requested=state_requested,
+            shots=shots,
+        )
+        kernel_strategy, workers = _resolve_kernel_scheduling(
+            simulation_config.kernel_parallelism,
+            max_workers=simulation_config.max_workers,
+            capabilities=self.capabilities.kernels,
+        )
+        return ExecutionPolicy(
+            execution_path=execution_path,
+            shot_strategy="none",
+            kernel_strategy=kernel_strategy,
+            worker_limit=workers,
+            fusion=simulation_config.fusion,
+            workflow="numba_operator",
+        )
 
     # State-engine reuse must not override the operator measurement contract.
     probabilities = _NumpyOperatorEngine.probabilities

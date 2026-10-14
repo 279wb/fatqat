@@ -1261,7 +1261,7 @@ class Simulator:
         shots: int,
     ) -> _ExecutionPolicy:
         """Ask the engine to resolve policy for one concrete prepared plan."""
-        return self._engine.resolve_execution_policy(
+        return self._engine.plan_execution(
             plan,
             prepared.simulation,
             counts_requested=request.counts,

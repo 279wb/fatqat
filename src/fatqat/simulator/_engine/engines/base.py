@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from functools import partial
-from typing import Any, Generic, Literal
+from typing import Any, Generic
 
 import numpy as np
 
@@ -21,17 +21,13 @@ from ..._execution_contract import (
 from ...._backends.steps import (
     ApplyChannelStep,
     ApplyMatrixStep,
-    LossStep,
     MeasurementStep,
-    PutStep,
-    ResetStep,
     ResolvedStep,
 )
 from ....result import reduce_to_counts
 from .._execution_policy import (
     _ExecutionPolicy as ExecutionPolicy,
     _materialization_policy,
-    _resolve_execution_policy,
 )
 from ..parallel import _run_shots_in_processes
 from ..state import EvolutionState, QuantumDataT
@@ -104,24 +100,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         return self._capabilities
 
     @abstractmethod
-    def _select_workflow(
-        self,
-        plan: Sequence[ResolvedStep],
-        simulation_config: SimulationConfig,
-        *,
-        execution_path: str,
-        counts_requested: bool,
-        state_requested: bool,
-        shots: int,
-        initial_state: InitialEvolutionState[QuantumDataT],
-    ) -> tuple[str, bool]:
-        """Return the engine's workflow identifier and shot-threading support.
-
-        Select against the complete request and controls before scheduling.
-        The base passes the identifier through; concrete entries interpret it.
-        """
-
-    def resolve_execution_policy(
+    def plan_execution(
         self,
         plan: Sequence[ResolvedStep],
         simulation_config: SimulationConfig,
@@ -131,67 +110,11 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         shots: int,
         initial_state: InitialEvolutionState[QuantumDataT],
     ) -> ExecutionPolicy:
-        """Choose execution paths for a plan using this engine's support."""
-        execution_path = self._select_execution_path(plan, initial_state=initial_state)
-        workflow, supports_shot_threads = self._select_workflow(
-            plan,
-            simulation_config,
-            execution_path=execution_path,
-            counts_requested=counts_requested,
-            state_requested=state_requested,
-            shots=shots,
-            initial_state=initial_state,
-        )
-        capabilities = self.capabilities
-        return _resolve_execution_policy(
-            simulation_config,
-            execution_path=execution_path,
-            counts_requested=counts_requested,
-            state_requested=state_requested,
-            capabilities=capabilities.kernels,
-            workflow=workflow,
-            supports_shot_threads=supports_shot_threads,
-            supports_process_shots=capabilities.supports_process_shots,
-            shots=shots,
-            plan_is_empty=not plan,
-        )
+        """Validate the request and choose its workflow and scheduling.
 
-    def _select_execution_path(
-        self,
-        plan: Sequence[ResolvedStep],
-        *,
-        initial_state: InitialEvolutionState[QuantumDataT],
-    ) -> Literal["operator", "single_pass", "per_shot"]:
-        """Classify the required evolution shape from plan and engine semantics."""
-        quantum = self.capabilities.quantum
-        if quantum.is_operator:
-            return "operator"
-        # Only the trajectory executor handles occupancy and erasure reports.
-        if initial_state.classical.occupied is not None:
-            return "per_shot"
-        measured: set[int] = set()
-        for step in plan:
-            if getattr(step, "condition", None) is not None or isinstance(
-                step, (PutStep, LossStep)
-            ):
-                return "per_shot"
-            if isinstance(step, MeasurementStep):
-                if measured.intersection(step.measured_indices):
-                    return "per_shot"
-                measured.update(step.measured_indices)
-                continue
-            if isinstance(step, ResetStep):
-                targets = step.reset_indices
-            else:
-                targets = step.target_indices
-            if (
-                isinstance(step, (ResetStep, ApplyChannelStep))
-                and quantum.nonunitary_is_stochastic
-            ):
-                return "per_shot"
-            if measured.intersection(targets):
-                return "per_shot"
-        return "single_pass"
+        Implementations use shared request classification and validation, then
+        resolve runtime-specific choices before preparing numerical payloads.
+        """
 
     def configure_system(self, system_dims: Sequence[int], n_clbits: int = 0) -> None:
         """Configure dimensions without allocating an evolving state."""

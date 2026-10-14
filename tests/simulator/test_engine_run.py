@@ -83,7 +83,7 @@ def test_numba_trajectory_execution_handles_supported_and_fallback_plans(with_lo
         shots=4,
         request=_StateVectorResultRequest(counts=True, statevector=False),
     )
-    policy = engine.resolve_execution_policy(
+    policy = engine.plan_execution(
         plan,
         _SimulationConfig(shot_parallelism="serial", kernel_parallelism="serial"),
         counts_requested=True,
@@ -314,7 +314,7 @@ def test_numba_initial_occupancy_preserves_erased_measurement():
         shots=4,
         request=_StateVectorResultRequest(counts=True, statevector=False),
     )
-    policy = engine.resolve_execution_policy(
+    policy = engine.plan_execution(
         plan,
         _SimulationConfig(shot_parallelism="serial", kernel_parallelism="serial"),
         counts_requested=True,

@@ -6,6 +6,8 @@ import weakref
 import numpy as np
 import pytest
 
+from fatqat.simulator._engine._execution_policy import _select_execution_path
+
 import fatqat as fq
 import fatqat.operations as ops
 from fatqat.simulator import Simulator
@@ -125,8 +127,10 @@ def _counts(engine_cls, plan, dims, n_clbits, shots, seed, request):
         shots=shots,
         seed=seed,
     )
-    execution_path = simulator._select_execution_path(
-        plan, initial_state=_InitialEvolutionState()
+    execution_path = _select_execution_path(
+        plan,
+        quantum_capabilities=simulator.capabilities.quantum,
+        initial_state=_InitialEvolutionState(),
     )
     policy = _ExecutionPolicy(
         execution_path=execution_path,

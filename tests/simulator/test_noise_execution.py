@@ -3,6 +3,8 @@
 import numpy as np
 import pytest
 
+from fatqat.simulator._engine._execution_policy import _select_execution_path
+
 import fatqat as fq
 import fatqat.operations as ops
 from fatqat._backends.steps import ApplyChannelStep, ApplyMatrixStep
@@ -155,8 +157,10 @@ def test_unconditional_channel_keeps_density_matrix_on_fast_path():
     backend = Simulator(method="DM", noise=_depolarized_x_model())
     program = _x_program(with_measurement=True)
     _plan, _facts = backend._lower_program(program)
-    execution_path = backend._engine._select_execution_path(
-        _plan, initial_state=backend._prepare_initial_state(None)
+    execution_path = _select_execution_path(
+        _plan,
+        quantum_capabilities=backend._engine.capabilities.quantum,
+        initial_state=backend._prepare_initial_state(None),
     )
 
     assert execution_path == "single_pass"
@@ -166,8 +170,10 @@ def test_channel_forces_statevector_onto_dynamic_path():
     backend = Simulator(method="SV", noise=_depolarized_x_model())
     program = _x_program(with_measurement=True)
     _plan, _facts = backend._lower_program(program)
-    execution_path = backend._engine._select_execution_path(
-        _plan, initial_state=backend._prepare_initial_state(None)
+    execution_path = _select_execution_path(
+        _plan,
+        quantum_capabilities=backend._engine.capabilities.quantum,
+        initial_state=backend._prepare_initial_state(None),
     )
 
     assert execution_path == "per_shot"
@@ -578,8 +584,10 @@ def test_numba_compiled_multi_shot_plan_matches_numpy_channels():
             shots=shots,
             seed=7,
         )
-        execution_path = simulator._select_execution_path(
-            plan, initial_state=_InitialEvolutionState(quantum=start)
+        execution_path = _select_execution_path(
+            plan,
+            quantum_capabilities=simulator.capabilities.quantum,
+            initial_state=_InitialEvolutionState(quantum=start),
         )
         policy = _ExecutionPolicy(
             execution_path=execution_path,

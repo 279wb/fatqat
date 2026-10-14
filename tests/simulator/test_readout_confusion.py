@@ -10,6 +10,8 @@ integer allocation.
 import numpy as np
 import pytest
 
+from fatqat.simulator._engine._execution_policy import _select_execution_path
+
 import fatqat as fq
 import fatqat.operations as ops
 from fatqat._backends.steps import MeasurementStep
@@ -89,8 +91,10 @@ def test_readout_confusion_keeps_single_pass_shape():
     program = _measured_program()
     backend = Simulator("statevector", noise=_readout_model(_FLIP_30))
     _plan, _facts = backend._lower_program(program)
-    execution_path = backend._engine._select_execution_path(
-        _plan, initial_state=backend._prepare_initial_state(None)
+    execution_path = _select_execution_path(
+        _plan,
+        quantum_capabilities=backend._engine.capabilities.quantum,
+        initial_state=backend._prepare_initial_state(None),
     )
 
     assert execution_path == "single_pass"
