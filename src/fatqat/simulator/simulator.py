@@ -135,7 +135,7 @@ class _PreparedExecution:
     facts: _PlanFacts
     lowering: _LoweringContext
     simulation: _SimulationConfig
-    initial_state: _InitialEvolutionState[np.ndarray]
+    initial_state: _InitialEvolutionState[Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -546,6 +546,8 @@ class Simulator:
                 validated. Basis indices use public most-significant-first
                 subsystem order; no basis-order permutation is applied.
                 Operator methods reject an initial state.
+                Shape errors raise directly; runtime array-conversion failures
+                are reported by ``Job.result()``.
             simulation_config: Optional per-run execution controls. String
                 choices are case-sensitive. Accepted keys are:
 
@@ -865,10 +867,8 @@ class Simulator:
         self._validate_engine_support(prepared)
         return prepared
 
-    def _prepare_initial_state(
-        self, quantum: np.ndarray | None
-    ) -> _InitialEvolutionState[np.ndarray]:
-        """Wrap normalized quantum input; subclasses supply classical components."""
+    def _prepare_initial_state(self, quantum: Any) -> _InitialEvolutionState[Any]:
+        """Wrap quantum input; subclasses supply classical components."""
         return _InitialEvolutionState(quantum=quantum)
 
     def _run_expectation(
@@ -1273,8 +1273,11 @@ class Simulator:
     # --- validation (raises directly from run) ---
     def _validate_initial_state(
         self, initial_state: Any, system_dims: tuple[int, ...]
-    ) -> np.ndarray | None:
-        """Check an ``initial_state`` against this method, and return it as an array.
+    ) -> Any:
+        """Check input shape without converting it to runtime storage.
+
+        Array inputs expose shape metadata directly; sequences use NumPy shape
+        inference. Runtime initialization owns dtype conversion and copying.
 
         Only the *shape* is checked. Normalization, hermiticity and positivity
         are deliberately not enforced, because nothing downstream relies on
@@ -1303,7 +1306,10 @@ class Simulator:
                 "which computes the program's map rather than a state evolving "
                 "under it. Use method='statevector' or method='density_matrix'"
             )
-        state = np.asarray(initial_state, dtype=complex)
+        shape = getattr(initial_state, "shape", None)
+        if shape is None:
+            shape = np.shape(initial_state)
+        shape = tuple(shape)
         size = 1
         for dimension in system_dims:
             size *= dimension
@@ -1314,14 +1320,14 @@ class Simulator:
             if self._state_field == "density_matrix"
             else ((size,),)
         )
-        if state.shape not in allowed:
-            expected = " or ".join(str(shape) for shape in allowed)
+        if shape not in allowed:
+            expected = " or ".join(str(expected_shape) for expected_shape in allowed)
             raise BackendValidationError(
-                f"initial_state has shape {state.shape}, but this program has "
+                f"initial_state has shape {shape}, but this program has "
                 f"subsystem dimensions {tuple(system_dims)}, so "
                 f"method={self._state_field!r} needs {expected}"
             )
-        return state
+        return initial_state
 
     def _validate_run_request(
         self, config: _ResultConfig, shots: int, facts: _PlanFacts

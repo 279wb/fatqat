@@ -10,7 +10,7 @@ pulse timing, transport, or Hamiltonian dynamics.
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .. import operations as ops
 from .._backends.backend_utils import _canonicalize_method
@@ -265,9 +265,7 @@ class AtomArraySimulator(Simulator):
             )
         return plan
 
-    def _prepare_initial_state(
-        self, quantum: np.ndarray | None
-    ) -> _InitialEvolutionState[np.ndarray]:
+    def _prepare_initial_state(self, quantum: Any) -> _InitialEvolutionState[Any]:
         """Start each trajectory with the atom array's initial occupancy."""
         return _InitialEvolutionState(
             quantum=quantum,
