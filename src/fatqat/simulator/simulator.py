@@ -842,14 +842,9 @@ class Simulator:
             execution, program, observables, shots=shots
         )
         try:
-            if not bound_occurrences:
+            if shots == 0 or not bound_occurrences:
                 values = self._execute_exact_expectation(
                     execution, constants, bound_occurrences, shots=shots
-                )
-                standard_errors = (0.0,) * len(values)
-            elif shots == 0:
-                values = self._execute_exact_expectation(
-                    execution, constants, bound_occurrences
                 )
                 standard_errors = (0.0,) * len(values)
             else:
@@ -1002,7 +997,7 @@ class Simulator:
         constants: tuple[float, ...],
         bound_occurrences: tuple[_BoundExpectationOccurrence, ...],
         *,
-        shots: int = 1,
+        shots: int,
     ) -> tuple[float, ...]:
         """Contract every observable against one backend-evolved state."""
         plan = execution.plan
