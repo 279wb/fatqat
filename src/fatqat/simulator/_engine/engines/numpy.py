@@ -118,7 +118,7 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
     Subclasses supply representation-specific numerical operations.
     """
 
-    def plan_execution(
+    def _plan_execution(
         self,
         plan: Sequence[ResolvedStep],
         simulation_config: SimulationConfig,

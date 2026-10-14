@@ -83,15 +83,14 @@ def test_numba_trajectory_execution_handles_supported_and_fallback_plans(with_lo
         shots=4,
         request=_StateVectorResultRequest(counts=True, statevector=False),
     )
-    policy = engine.plan_execution(
+    result = engine.execute(
         plan,
-        _SimulationConfig(shot_parallelism="serial", kernel_parallelism="serial"),
-        counts_requested=True,
-        state_requested=False,
-        shots=context.shots,
+        context=context,
+        simulation_config=_SimulationConfig(
+            shot_parallelism="serial", kernel_parallelism="serial"
+        ),
         initial_state=initial,
     )
-    result = engine.execute(plan, context=context, policy=policy, initial_state=initial)
 
     assert result.outcome_keys.tolist() == [[2 if with_loss else 0]]
     assert result.outcome_counts.tolist() == [4]
@@ -214,19 +213,14 @@ def test_initial_register_drives_feedback_and_is_fresh_per_shot(mode):
         shots=8,
         request=_StateVectorResultRequest(counts=True, statevector=False),
     )
-    policy = _ExecutionPolicy(
-        execution_path="per_shot",
-        shot_strategy="processes" if mode == "processes" else "serial",
-        kernel_strategy="serial",
-        worker_limit=2 if mode == "processes" else 1,
-        fusion=False,
-        workflow="numba_trajectories" if mode == "compiled" else "python",
-    )
-
     result = engine.execute(
         tuple(plan),
         context=context,
-        policy=policy,
+        simulation_config=_SimulationConfig(
+            shot_parallelism="processes" if mode == "processes" else "serial",
+            kernel_parallelism="serial" if mode != "numba" else "auto",
+            max_workers=2 if mode == "processes" else None,
+        ),
         initial_state=initial,
     )
 
@@ -314,15 +308,14 @@ def test_numba_initial_occupancy_preserves_erased_measurement():
         shots=4,
         request=_StateVectorResultRequest(counts=True, statevector=False),
     )
-    policy = engine.plan_execution(
+    result = engine.execute(
         plan,
-        _SimulationConfig(shot_parallelism="serial", kernel_parallelism="serial"),
-        counts_requested=True,
-        state_requested=False,
-        shots=context.shots,
+        context=context,
+        simulation_config=_SimulationConfig(
+            shot_parallelism="serial", kernel_parallelism="serial"
+        ),
         initial_state=initial,
     )
-    result = engine.execute(plan, context=context, policy=policy, initial_state=initial)
 
     assert result.outcome_keys.tolist() == [[2]]
     assert result.outcome_counts.tolist() == [4]

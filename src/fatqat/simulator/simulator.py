@@ -77,7 +77,6 @@ from ._execution_contract import (
     _UnitaryResultRequest,
     _InitialEvolutionState,
 )
-from ._engine._execution_policy import _ExecutionPolicy
 from .._backends.view_normalization import ProgramInstruction, _break_grouped_operations
 from .._backends.steps import (
     ApplyChannelStep,
@@ -167,11 +166,10 @@ class _BoundExpectationOccurrence:
 
 @dataclass(frozen=True, slots=True)
 class _PreparedExpectationSample:
-    """One sampled occurrence with its validated execution policy."""
+    """One sampled occurrence with its lowered execution plan."""
 
     bound: _BoundExpectationOccurrence
     execution: _PreparedExecution
-    policy: _ExecutionPolicy
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,7 +180,6 @@ class _PreparedExpectation:
     constants: tuple[float, ...]
     bound_occurrences: tuple[_BoundExpectationOccurrence, ...]
     state_request: _ResultRequest
-    state_policy: _ExecutionPolicy | None
     sample_request: _ResultRequest
     samples: tuple[_PreparedExpectationSample, ...]
 
@@ -578,7 +575,8 @@ class Simulator:
                   ``"raise"`` propagates execution and result-assembly errors
                   immediately. ``"capture"`` returns a failed job whose
                   ``result()`` re-raises the original exception. Input and
-                  execution-policy validation always raise directly.
+                  configuration validation always raise directly. Engine
+                  planning errors follow this option.
                 - ``"fusion"`` (``bool``, default ``False``): Whether to
                   combine compatible adjacent operations. ``True`` requires
                   Numba with ``density_matrix``, ``unitary``, or ``superop``.
@@ -898,7 +896,7 @@ class Simulator:
         )
         try:
             if not prepared.bound_occurrences:
-                values = prepared.constants
+                values = self._execute_exact_expectation(prepared, shots=shots)
                 standard_errors = (0.0,) * len(values)
             elif shots == 0:
                 values = self._execute_exact_expectation(prepared)
@@ -964,43 +962,17 @@ class Simulator:
             counts=True,
             **{self._state_field: False},
         )
-        state_policy = None
-        samples = []
-        if not bound_occurrences:
-            # There is no numerical execution, but explicit engine controls
-            # retain the same validation contract as a direct backend run.
-            no_result_request = self._request_cls(
-                counts=False,
-                **{self._state_field: False},
-            )
-            self._resolve_plan_policy(
-                plan,
-                execution,
-                request=no_result_request,
-                shots=shots,
-            )
-        elif shots == 0:
-            state_policy = self._resolve_plan_policy(
-                plan,
-                execution,
-                request=state_request,
-                shots=1,
-            )
-        else:
-            state_policy, samples = self._prepare_expectation_samples(
-                execution,
-                bound_occurrences,
-                state_request=state_request,
-                sample_request=sample_request,
-                shots=shots,
-            )
+        samples = (
+            self._prepare_expectation_samples(execution, bound_occurrences)
+            if shots > 0
+            else ()
+        )
 
         return _PreparedExpectation(
             execution=execution,
             constants=constants,
             bound_occurrences=bound_occurrences,
             state_request=state_request,
-            state_policy=state_policy,
             sample_request=sample_request,
             samples=tuple(samples),
         )
@@ -1009,23 +981,10 @@ class Simulator:
         self,
         execution: _PreparedExecution,
         bound_occurrences: tuple[_BoundExpectationOccurrence, ...],
-        *,
-        state_request: _ResultRequest,
-        sample_request: _ResultRequest,
-        shots: int,
-    ) -> tuple[_ExecutionPolicy | None, tuple[_PreparedExpectationSample, ...]]:
-        """Resolve base-state reuse and per-occurrence sampling policies."""
+    ) -> tuple[_PreparedExpectationSample, ...]:
+        """Prepare sampling tails, reusing deterministic base evolution."""
         plan = execution.plan
         assert isinstance(plan, tuple)
-        state_policy = None
-        if not execution.facts.stochastic_final_state:
-            state_policy = self._resolve_plan_policy(
-                plan,
-                execution,
-                request=state_request,
-                shots=1,
-            )
-
         samples = []
         for bound in bound_occurrences:
             if execution.facts.stochastic_final_state:
@@ -1043,15 +1002,9 @@ class Simulator:
                 _PreparedExpectationSample(
                     bound=bound,
                     execution=sample_execution,
-                    policy=self._resolve_plan_policy(
-                        sample_plan,
-                        sample_execution,
-                        request=sample_request,
-                        shots=shots,
-                    ),
                 )
             )
-        return state_policy, tuple(samples)
+        return tuple(samples)
 
     def _bind_expectation_occurrences(
         self,
@@ -1122,8 +1075,6 @@ class Simulator:
         execution = prepared.execution
         plan = execution.plan
         assert isinstance(plan, tuple)
-        if prepared.state_policy is None:
-            raise RuntimeError("expectation base execution has no resolved policy")
         context = _ExecutionContext(
             request=prepared.state_request,
             system_dims=tuple(execution.lowering.engine_allocation.system_dims),
@@ -1134,7 +1085,7 @@ class Simulator:
         raw = self._engine.execute(
             plan=plan,
             context=context,
-            policy=prepared.state_policy,
+            simulation_config=execution.simulation,
             initial_state=execution.initial_state,
         )
         if raw.state is None:
@@ -1144,19 +1095,39 @@ class Simulator:
     def _execute_exact_expectation(
         self,
         prepared: _PreparedExpectation,
+        *,
+        shots: int = 1,
     ) -> tuple[float, ...]:
         """Contract every observable against one backend-evolved state."""
-        state = self._execute_expectation_base(prepared)
+        execution = prepared.execution
+        plan = execution.plan
+        assert isinstance(plan, tuple)
         terms_by_observable = [[] for _constant in prepared.constants]
         for bound in prepared.bound_occurrences:
             terms_by_observable[bound.occurrence.observable_index].append(
                 (bound.occurrence.coefficient, bound.engine_factors)
             )
-        values = self._engine._expectation_values(
-            state.quantum,
-            tuple(tuple(terms) for terms in terms_by_observable),
-            policy=prepared.state_policy,
+        has_terms = bool(prepared.bound_occurrences)
+        context = _ExecutionContext(
+            request=(
+                prepared.state_request
+                if has_terms
+                else self._request_cls(counts=False, **{self._state_field: False})
+            ),
+            system_dims=tuple(execution.lowering.engine_allocation.system_dims),
+            n_clbits=execution.lowering.classical_allocation.n_clbits,
+            shots=1 if has_terms else shots,
+            seed=execution.simulation.seed,
         )
+        values = self._engine.execute_expectation(
+            plan,
+            tuple(tuple(terms) for terms in terms_by_observable) if has_terms else (),
+            context=context,
+            simulation_config=execution.simulation,
+            initial_state=execution.initial_state,
+        )
+        if not has_terms:
+            return prepared.constants
         return tuple(
             constant + value
             for constant, value in zip(prepared.constants, values, strict=True)
@@ -1171,7 +1142,7 @@ class Simulator:
         """Execute native outcomes for each independent term occurrence."""
         base_state = (
             self._execute_expectation_base(prepared)
-            if prepared.state_policy is not None
+            if not prepared.execution.facts.stochastic_final_state
             else None
         )
         statistics = []
@@ -1205,7 +1176,7 @@ class Simulator:
             raw = self._engine.execute(
                 plan=plan,
                 context=context,
-                policy=sample.policy,
+                simulation_config=execution.simulation,
                 initial_state=initial,
             )
             if raw.outcome_keys is None or raw.outcome_counts is None:
@@ -1230,24 +1201,17 @@ class Simulator:
         """Execute one concrete plan under already-validated run settings.
 
         ``plan`` is ``prepared.plan`` for an ordinary run, or one row's
-        materialized plan in a sweep. The execution policy is resolved per
-        plan because compiled multi-shot compatibility depends on the concrete
-        steps. Error handling controls whether execution and result-assembly
-        failures propagate or become a failed job.
+        materialized plan in a sweep. Error handling controls whether engine
+        planning, execution, and result-assembly failures propagate or become
+        a failed job.
         """
         request = prepared.request
-        policy = self._resolve_plan_policy(
-            plan,
-            prepared,
-            request=request,
-            shots=prepared.shots,
-        )
         try:
             raw = self._engine.execute(
                 plan=plan,
                 context=prepared.context,
                 initial_state=prepared.initial_state,
-                policy=policy,
+                simulation_config=prepared.simulation,
             )
             result = self._assemble_result(
                 raw=raw,
@@ -1263,24 +1227,6 @@ class Simulator:
             if prepared.simulation.error_handling == "raise":
                 raise
             return Job(status="ERROR", error=exc)
-
-    def _resolve_plan_policy(
-        self,
-        plan: tuple[ResolvedStep, ...],
-        prepared: _PreparedExecution,
-        *,
-        request: _ResultRequest,
-        shots: int,
-    ) -> _ExecutionPolicy:
-        """Ask the engine to resolve policy for one concrete prepared plan."""
-        return self._engine.plan_execution(
-            plan,
-            prepared.simulation,
-            counts_requested=request.counts,
-            state_requested=getattr(request, self._state_field),
-            shots=shots,
-            initial_state=prepared.initial_state,
-        )
 
     # --- validation (raises directly from run) ---
     def _validate_initial_state(

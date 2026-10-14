@@ -196,7 +196,7 @@ class NumbaSVEngine(NumpySVEngine):
         supports_process_shots=True,
     )
 
-    def plan_execution(
+    def _plan_execution(
         self,
         plan: Sequence[ResolvedStep],
         simulation_config: SimulationConfig,
@@ -745,7 +745,7 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
     `_operator_payloads`.
     """
 
-    def plan_execution(
+    def _plan_execution(
         self,
         plan: Sequence[ResolvedStep],
         simulation_config: SimulationConfig,

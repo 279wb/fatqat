@@ -164,19 +164,28 @@ def test_execution_error_handling(monkeypatch, mode, request_kind):
     assert caught.value is error
 
 
-@pytest.mark.parametrize("sweep", [False, True])
-def test_capture_does_not_capture_execution_policy_validation(sweep):
+@pytest.mark.parametrize("request_kind", ["run", "sweep", "expectation", "constant"])
+def test_capture_returns_engine_planning_errors_in_job(request_kind):
     backend = Simulator("SV", runtime="numpy")
     theta = fq.Parameter("theta")
     program = fq.Program(1)
-    program.add(ops.RX(theta if sweep else 0.1), 0)
+    program.add(ops.RX(theta if request_kind == "sweep" else 0.1), 0)
     config = {"error_handling": "capture", "shot_parallelism": "processes"}
 
+    def run():
+        if request_kind == "sweep":
+            return backend.run_sweep(program, {theta: [0.1]}, simulation_config=config)
+        if request_kind in {"expectation", "constant"}:
+            return fq.Estimator(backend).run(
+                program,
+                fq.Observable([("I" if request_kind == "constant" else "Z", 1.0)]),
+                simulation_config=config,
+            )
+        return backend.run(program, simulation_config=config)
+
+    job = run()
     with pytest.raises(BackendValidationError, match="requires independent per-shot"):
-        if sweep:
-            backend.run_sweep(program, {theta: [0.1]}, simulation_config=config)
-        else:
-            backend.run(program, simulation_config=config)
+        job.result()
 
 
 @pytest.mark.parametrize("operation", ["measurement", "condition"])
@@ -244,7 +253,7 @@ def test_numba_trajectory_workflow_selection(shots, first_step, expected_workflo
     from fatqat.simulator._engine.engines.numba import NumbaSVEngine
 
     # Numerical results alone cannot detect accidentally disabling compilation.
-    policy = NumbaSVEngine().plan_execution(
+    policy = NumbaSVEngine()._plan_execution(
         (first_step, MeasurementStep((0,), (0,))),
         _SimulationConfig(max_workers=1),
         counts_requested=True,
@@ -266,7 +275,7 @@ def test_process_worker_capacity_follows_the_cpu_affinity_mask(monkeypatch):
     monkeypatch.setattr(
         f"{module}.sched_getaffinity", lambda pid: {4, 5, 6}, raising=False
     )
-    policy = NumpySVEngine().plan_execution(
+    policy = NumpySVEngine()._plan_execution(
         (ResetStep((0,)), MeasurementStep((0,), (0,))),
         _SimulationConfig(shot_parallelism="processes", kernel_parallelism="serial"),
         counts_requested=True,

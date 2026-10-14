@@ -100,7 +100,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         return self._capabilities
 
     @abstractmethod
-    def plan_execution(
+    def _plan_execution(
         self,
         plan: Sequence[ResolvedStep],
         simulation_config: SimulationConfig,
@@ -197,10 +197,56 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         plan: tuple[ResolvedStep, ...],
         *,
         context: ExecutionContext,
+        simulation_config: SimulationConfig,
+        initial_state: InitialEvolutionState[QuantumDataT],
+    ) -> RawResult[QuantumDataT]:
+        """Plan, materialize, and execute one requested evolution."""
+        policy = self._plan_execution(
+            plan,
+            simulation_config,
+            counts_requested=context.request.counts,
+            state_requested=getattr(context.request, self._state_field),
+            shots=context.shots,
+            initial_state=initial_state,
+        )
+        return self._execute_plan(plan, context, policy, initial_state)
+
+    def execute_expectation(
+        self,
+        plan: tuple[ResolvedStep, ...],
+        observables: Sequence[tuple[tuple[float, tuple[tuple[int, str], ...]], ...]],
+        *,
+        context: ExecutionContext,
+        simulation_config: SimulationConfig,
+        initial_state: InitialEvolutionState[QuantumDataT],
+    ) -> tuple[float, ...]:
+        """Evolve and contract Pauli sums within the selected runtime policy.
+
+        Empty observables validate execution controls without evolving a state.
+        """
+        policy = self._plan_execution(
+            plan,
+            simulation_config,
+            counts_requested=context.request.counts,
+            state_requested=getattr(context.request, self._state_field),
+            shots=context.shots,
+            initial_state=initial_state,
+        )
+        if not observables:
+            return ()
+        raw = self._execute_plan(plan, context, policy, initial_state)
+        if raw.state is None:
+            raise RuntimeError("expectation execution returned no state")
+        return self._expectation_values(raw.state, observables, policy=policy)
+
+    def _execute_plan(
+        self,
+        plan: tuple[ResolvedStep, ...],
+        context: ExecutionContext,
         policy: ExecutionPolicy,
         initial_state: InitialEvolutionState[QuantumDataT],
     ) -> RawResult[QuantumDataT]:
-        """Materialize and dispatch a plan through local or CPU process execution."""
+        """Materialize and dispatch an engine-selected execution policy."""
         payload = self.materialize_execution(
             plan,
             system_dims=context.system_dims,
