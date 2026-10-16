@@ -236,12 +236,14 @@ def test_every_builtin_parametric_gate_matches_explicit_loop(
         )
 
 
-def test_counts_match_explicit_loop_across_replay_chunks():
+def test_counts_match_explicit_loop_across_replay_chunks(monkeypatch):
+    # Room for three 2x2 complex matrices per chunk: 7 rows take 3 chunks.
+    monkeypatch.setattr(planning, "_REPLAY_CHUNK_BYTES", 3 * 4 * 16)
     theta = fq.Parameter("theta")
     program = fq.Program(1, 1)
     program.add(ops.RY(theta), 0)
     program.measure(0, 0)
-    values = np.linspace(0.0, np.pi, planning._REPLAY_CHUNK_ROWS + 3)
+    values = np.linspace(0.0, np.pi, 7)
     backend = Simulator("SV")
     options = {"shots": 16, "simulation_config": {"seed": 5}}
 
@@ -256,29 +258,33 @@ def test_counts_match_explicit_loop_across_replay_chunks():
     assert [result.get_counts() for result in swept] == explicit
 
 
-@pytest.mark.parametrize(
-    "values",
-    [[np.float32(0.2), np.float32(1.3)], [1, 2], [0.2, 1]],
-    ids=["float32", "int", "mixed"],
-)
-def test_sweep_keeps_each_value_type_like_explicit_binding(values):
-    # A rule computes in its value's own type, so a float32 angle realizes a
-    # float32-precision matrix; the sweep must not silently widen it.
+def test_replay_chunks_are_sized_by_matrix_bytes(monkeypatch):
+    # Room for two 3x3 complex matrices per chunk: 5 rows take chunks 2, 2, 1.
+    monkeypatch.setattr(planning, "_REPLAY_CHUNK_BYTES", 2 * 9 * 16)
+    chunk_sizes = []
+    build = planning._build_gate_matrix_batch
+
+    def recording_build(recipe, builder, thetas):
+        chunk_sizes.append(len(thetas))
+        return build(recipe, builder, thetas)
+
+    monkeypatch.setattr(planning, "_build_gate_matrix_batch", recording_build)
+    theta = fq.Parameter("theta")
+    program = fq.Program([fq.QuantumRegister(1, dim=3)])
+    program.add(ops.SubspaceRX(theta, (0, 2)), 0)
+
+    Simulator("SV").run_sweep(program, {theta: np.linspace(0, 1, 5)}, **_STATE_ONLY)
+
+    assert chunk_sizes == [2, 2, 1]
+
+
+def test_batched_builder_failure_raises_matrix_implementation_error():
     theta = fq.Parameter("theta")
     program = fq.Program(1)
-    program.add(ops.RX(theta), 0)
-    backend = Simulator("SV")
+    program.add(ops.U(theta, 10**400, 0), 0)
 
-    swept = backend.run_sweep(program, {theta: values}, **_STATE_ONLY).result()
-    explicit = [
-        backend.run(program.assign_parameters({theta: value}), **_STATE_ONLY)
-        .result()
-        .get_statevector()
-        for value in values
-    ]
-
-    for result, expected in zip(swept, explicit, strict=True):
-        assert np.array_equal(result.get_statevector(), expected)
+    with pytest.raises(MatrixImplementationError, match="implementation for U"):
+        Simulator("SV").run_sweep(program, {theta: [0.1, 0.2]})
 
 
 def test_batch_validation_finishes_before_row_zero(monkeypatch):
@@ -526,14 +532,15 @@ def test_parametric_program_lowers_to_deferred_picklable_steps():
     assert deferred.param_slots == (0,)
     assert deferred.target_dims == (2,)
     assert deferred.target_indices == (0,)
-    # Non-parametric steps are shared with the materialized plans, not rebuilt.
-    materialized = plan.materialize((0.3,))
-    assert materialized[0] is plan.steps[0]
-    assert isinstance(materialized[1], ApplyMatrixStep)
-    assert np.allclose(materialized[1].matrix, _rx_matrix(0.3))
+    # Non-parametric steps are shared with the resolved plans, not rebuilt.
+    (resolved,) = plan.resolve_rows([(0.3,)])
+    assert resolved[0] is plan.steps[0]
+    assert isinstance(resolved[1], ApplyMatrixStep)
+    assert np.allclose(resolved[1].matrix, _rx_matrix(0.3))
     # The deferred plan is a plain execution payload: it pickles by value.
     restored = pickle.loads(pickle.dumps(plan))
-    assert np.allclose(restored.materialize((0.3,))[1].matrix, _rx_matrix(0.3))
+    (resolved,) = restored.resolve_rows([(0.3,)])
+    assert np.allclose(resolved[1].matrix, _rx_matrix(0.3))
 
 
 def test_resolved_step_union_holds_only_engine_executable_steps():

@@ -763,7 +763,7 @@ class Simulator:
         results: list[Result] = []
         # Rule and shape failures raise directly from the iteration, exactly
         # as they raise directly from lowering in run().
-        for point_plan in template.materialize_rows(thetas):
+        for point_plan in template.resolve_rows(thetas):
             try:
                 results.append(self._execute_plan(point_plan, prepared).result())
             except Exception as exc:  # execution-stage failure

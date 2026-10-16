@@ -66,8 +66,8 @@ class _MatrixRecipe:
     Not a `ResolvedStep`: an engine never receives one. A recipe records
     everything lowering resolved structurally - rule selection, engine
     indices, condition, kernel identity, expected shape - and defers only the
-    numeric matrix to sweep replay, when `_ParametricPlan.materialize`
-    substitutes one θ vector and turns it into an ordinary `ApplyMatrixStep`.
+    numeric matrix to sweep replay, when `_ParametricPlan.resolve_rows`
+    substitutes each θ vector and turns it into an ordinary `ApplyMatrixStep`.
 
     The fields form two halves. ``kernel_key``, ``param_slots``,
     ``target_indices``, ``target_dims`` and ``condition`` are plain data an
@@ -511,81 +511,57 @@ _BATCHED_RULES: dict[BuiltinKernelKey, tuple[type[Operation], _BatchedBuilder]] 
     ),
 }
 
-# Rows whose batched matrices are held at once, bounding replay memory to
-# ``_REPLAY_CHUNK_ROWS`` matrices per parametric gate however long the batch.
-_REPLAY_CHUNK_ROWS = 256
-
-# Integers up to this magnitude convert to float64 exactly.
-_EXACT_FLOAT64_INT = 2**53
+# Bytes of batched gate matrices held at once during replay. A chunk takes as
+# many rows as fit, and at least one, so a high-dimensional gate never holds
+# more matrices at once than per-row replay would.
+_REPLAY_CHUNK_BYTES = 64 * 2**20
 
 
-def _float64_column(values: Sequence[Real]) -> np.ndarray | None:
-    """Return one θ column as float64, or ``None`` if its rows replay singly.
-
-    A scalar rule computes in each value's own type. float64 arithmetic over
-    the column reproduces it exactly for ``float`` (including NumPy float64)
-    values and for integers float64 represents exactly; any other real scalar
-    (NumPy float32, longdouble, a huge integer) keeps the per-row rule call.
-    """
-    for value in values:
-        if isinstance(value, float):
-            continue
-        if isinstance(value, (int, np.integer)) and (
-            abs(int(value)) <= _EXACT_FLOAT64_INT
-        ):
-            continue
-        return None
-    return np.array(values, dtype=np.float64)
-
-
-def _batched_recipe_matrices(
-    recipe: _MatrixRecipe, column: Callable[[int], np.ndarray | None]
-) -> np.ndarray | None:
-    """Build one recipe's matrices for a chunk of rows, or ``None`` to replay.
-
-    ``column(slot)`` is the chunk's float64 θ column for one slot. Returns a
-    read-only ``(rows, d, d)`` stack, or ``None`` when the recipe has no
-    batched twin, a column cannot be batched, or the result would fail shape
-    validation - per-row replay then raises the same error ``run()`` would.
-    """
+def _batched_builder(recipe: _MatrixRecipe) -> _BatchedBuilder | None:
+    """Return the recipe's batched builder, or ``None`` if it has no twin."""
     entry = _BATCHED_RULES.get(recipe.kernel_key)  # type: ignore[arg-type]
-    template = recipe.operation_template
-    if entry is None or type(template) is not entry[0]:
+    if entry is None or type(recipe.operation_template) is not entry[0]:
         return None
+    return entry[1]
+
+
+def _build_gate_matrix_batch(
+    recipe: _MatrixRecipe,
+    builder: _BatchedBuilder,
+    thetas: Sequence[Sequence[Real]],
+) -> np.ndarray:
+    """Build one recipe's read-only ``(rows, d, d)`` matrix stack for ``thetas``.
+
+    θ columns are evaluated in float64, the package's working precision.
+    Builder failures raise `MatrixImplementationError` and a wrong-shaped
+    stack raises `BackendValidationError`, as per-row replay would.
+    """
+    template = recipe.operation_template
     values: dict[str, Any] = {}
     slot_index = 0
-    for field_info in fields(template):
-        value = getattr(template, field_info.name)
-        if isinstance(value, Parameter):
-            value = column(recipe.param_slots[slot_index])
-            slot_index += 1
-            if value is None:
-                return None
-        values[field_info.name] = value
-    stack = entry[1](values.__getitem__, recipe.targets)
+    try:
+        for field_info in fields(template):
+            value = getattr(template, field_info.name)
+            if isinstance(value, Parameter):
+                slot = recipe.param_slots[slot_index]
+                value = np.array([theta[slot] for theta in thetas], dtype=np.float64)
+                slot_index += 1
+            values[field_info.name] = value
+        stack = builder(values.__getitem__, recipe.targets)
+    except Exception as exc:
+        raise MatrixImplementationError(
+            f"implementation for {type(template).__name__} raised: {exc}"
+        ) from exc
     expected = prod(recipe.target_dims)
     if stack.shape[1:] != (expected, expected):
-        return None
+        raise BackendValidationError(
+            f"{type(template).__name__} resolved to a "
+            f"{stack.shape[1:]} matrix, incompatible with target "
+            f"dimensions {recipe.target_dims} (expected "
+            f"{(expected, expected)})"
+        )
     stack.flags.writeable = False
     return stack
-
-
-def _replay_step(
-    step: ResolvedStep | _MatrixRecipe,
-    theta: Sequence[Real],
-    matrix: np.ndarray | None,
-) -> ResolvedStep:
-    """Realize one plan step for one row, from its batched matrix if given."""
-    if not isinstance(step, _MatrixRecipe):
-        return step
-    if matrix is None:
-        return _materialize_recipe(step, theta)
-    return ApplyMatrixStep(
-        matrix=matrix,
-        target_indices=step.target_indices,
-        condition=step.condition,
-        kernel_key=step.kernel_key,
-    )
 
 
 @dataclass(frozen=True)
@@ -594,8 +570,8 @@ class _ParametricPlan:
 
     The sweep counterpart of a ``tuple[ResolvedStep, ...]``, kept as its own
     type so the `ResolvedStep` contract ("an engine can execute every member")
-    stays true. Structural lowering happened once; ``materialize`` turns the
-    plan into an engine-ready step tuple for one θ vector. Non-parametric
+    stays true. Structural lowering happened once; ``resolve_rows`` turns the
+    plan into an engine-ready step tuple per θ vector. Non-parametric
     steps are shared by reference across rows (their payloads are frozen).
 
     Attributes:
@@ -608,37 +584,51 @@ class _ParametricPlan:
     steps: tuple[ResolvedStep | _MatrixRecipe, ...]
     param_order: tuple[Parameter, ...]
 
-    def materialize(self, theta: Sequence[Real]) -> tuple[ResolvedStep, ...]:
-        """Return the concrete, engine-ready plan for one θ vector."""
-        return tuple(_replay_step(step, theta, None) for step in self.steps)
-
-    def materialize_rows(
+    def resolve_rows(
         self, thetas: Sequence[Sequence[Real]]
     ) -> Iterator[tuple[ResolvedStep, ...]]:
         """Yield the concrete, engine-ready plan for each θ vector in order.
 
-        Equivalent to calling ``materialize`` on each row. Built-in
-        parametric gates get their matrices for a chunk of rows at once from
-        the batched twins of their rules; every other recipe calls its rule
-        per row, so a rule or shape failure still raises when its row is
-        reached, after the earlier rows were yielded.
+        Built-in parametric gates get their matrices for a chunk of rows at
+        once from the batched twins of their rules, so a failure there raises
+        when its chunk is reached. Every other recipe calls its rule per row
+        and raises when its row is reached, after the earlier rows were
+        yielded.
         """
-        for start in range(0, len(thetas), _REPLAY_CHUNK_ROWS):
-            chunk = thetas[start : start + _REPLAY_CHUNK_ROWS]
-            columns = [
-                _float64_column([theta[slot] for theta in chunk])
-                for slot in range(len(self.param_order))
-            ]
+        builders = [
+            _batched_builder(step) if isinstance(step, _MatrixRecipe) else None
+            for step in self.steps
+        ]
+        row_bytes = sum(
+            prod(step.target_dims) ** 2 * np.dtype(complex).itemsize
+            for step, builder in zip(self.steps, builders)
+            if builder is not None
+        )
+        chunk_rows = max(1, _REPLAY_CHUNK_BYTES // row_bytes) if row_bytes else 1
+        for start in range(0, len(thetas), chunk_rows):
+            chunk = thetas[start : start + chunk_rows]
             stacks = [
                 (
-                    _batched_recipe_matrices(step, columns.__getitem__)
-                    if isinstance(step, _MatrixRecipe)
-                    else None
+                    None
+                    if builder is None
+                    else _build_gate_matrix_batch(step, builder, chunk)
                 )
-                for step in self.steps
+                for step, builder in zip(self.steps, builders)
             ]
             for row, theta in enumerate(chunk):
-                yield tuple(
-                    _replay_step(step, theta, None if stack is None else stack[row])
-                    for step, stack in zip(self.steps, stacks)
-                )
+                resolved: list[ResolvedStep] = []
+                for step, stack in zip(self.steps, stacks):
+                    if not isinstance(step, _MatrixRecipe):
+                        resolved.append(step)
+                    elif stack is None:
+                        resolved.append(_materialize_recipe(step, theta))
+                    else:
+                        resolved.append(
+                            ApplyMatrixStep(
+                                matrix=stack[row],
+                                target_indices=step.target_indices,
+                                condition=step.condition,
+                                kernel_key=step.kernel_key,
+                            )
+                        )
+                yield tuple(resolved)
