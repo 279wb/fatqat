@@ -3,9 +3,10 @@
 `NumpySVEngine` (statevector) and `NumpyDMEngine` (density matrix) are the
 two *state* `MatrixEngine` implementations. `MatrixEngine` owns shared plan
 materialization and Python execution; `_NumpyMatrixEngine` supplies NumPy
-initialization, sampling, expectations, and measurement decoding. Each leaf
-contributes its numerical operations and explicit capabilities. Engine-owned
-selection determines the semantic execution shape.
+initialization and expectations. Measurement sequencing uses explicit state
+and runtime-selected numerical functions. Each leaf contributes its numerical
+operations and explicit capabilities. Engine-owned selection determines the
+semantic execution shape.
 
 `NumpyUnitaryEngine` and `NumpySuperopEngine` are the two *operator* engines:
 they compute the program's map rather than a state under it. Each is its state
@@ -85,7 +86,14 @@ from .._execution_policy import (
     _validate_shot_parallelism,
 )
 from .base import MatrixEngine
-from ..numerics.numpy import (
+from ..numerics.numpy._measurement import (
+    _statevector_probabilities,
+    _density_matrix_probabilities,
+    _project_statevector,
+    _project_density_matrix,
+    _sample_basis_indices,
+)
+from ..numerics.numpy._state import (
     _ChannelRouteCache,
     _ResetChannelCache,
     _allocate_statevector,
@@ -98,22 +106,27 @@ from ..numerics.numpy import (
     _apply_statevector,
     _apply_superoperator,
     _apply_unitary,
-    _density_matrix_probabilities,
-    _digit,
-    _project_density_matrix,
     _reset_density_matrix,
     _reset_statevector,
-    _project_statevector,
-    _statevector_probabilities,
     _sample_unitary,
 )
+from ..workflows.python import _MeasurementKernels, _collapse
 from ..state import ClassicalState, EvolutionState
+
+# Select stateless functions once; trajectory initialization binds no callbacks.
+_SV_MEASUREMENT = _MeasurementKernels(
+    _statevector_probabilities, _project_statevector, _sample_basis_indices
+)
+_DM_MEASUREMENT = _MeasurementKernels(
+    _density_matrix_probabilities, _project_density_matrix, _sample_basis_indices
+)
+
 
 # --- shared NumPy operations ---
 
 
 class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
-    """NumPy allocation, sampling, measurement decoding, and expectations.
+    """NumPy allocation and expectations, with runtime-selected numerical functions.
 
     Shared plan preparation and workflow invocation come from ``MatrixEngine``.
     Subclasses supply representation-specific numerical operations.
@@ -208,17 +221,6 @@ class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
     def _allocate(self, size: int, initial_state: np.ndarray | None) -> np.ndarray:
         """Return a fresh owned state over ``size`` basis states."""
 
-    def measure_subsystems(
-        self, indices: Sequence[int], rng: np.random.Generator
-    ) -> tuple[int, ...]:
-        assert len(indices) >= 1, "measure_subsystems requires at least one index"
-        flat = self.collapse(indices, rng)
-        return tuple(_digit(flat, index, self._dims) for index in indices)
-
-    def sample_indices(self, shots: int, rng: np.random.Generator) -> np.ndarray:
-        """Sample flat basis-state indices from the NumPy quantum buffer."""
-        return rng.choice(self.state.shape[0], size=shots, p=self.probabilities())
-
 
 # --- statevector engine ---
 
@@ -243,6 +245,8 @@ class NumpySVEngine(_NumpyMatrixEngine):
 
     def _retain_step_caches(self, plan: tuple[ResolvedStep, ...]) -> None:
         self._channel_routes.retain(plan)
+
+    _measurement_kernels = _SV_MEASUREMENT
 
     _allocate = staticmethod(_allocate_statevector)
 
@@ -291,17 +295,6 @@ class NumpySVEngine(_NumpyMatrixEngine):
             state, matrix, targets, self._dims, self._reversed_dims
         )
 
-    def probabilities(self) -> np.ndarray:
-        return _statevector_probabilities(self.state)
-
-    def collapse(
-        self, measured_subsystems: Sequence[int], rng: np.random.Generator
-    ) -> int:
-        state = self.state
-        idx = int(rng.choice(len(state), p=self.probabilities()))
-        self._state = _project_statevector(state, idx, measured_subsystems, self._dims)
-        return idx
-
     def reset_subsystems(
         self, indices: Sequence[int], rng: np.random.Generator
     ) -> None:
@@ -311,7 +304,10 @@ class NumpySVEngine(_NumpyMatrixEngine):
         correctly conditioned on the sampled branch.
         """
         assert len(indices) >= 1, "reset_subsystems requires at least one index"
-        idx = self.collapse(indices, rng)
+        assert self._evolution_state is not None
+        idx = _collapse(
+            self._evolution_state, self._measurement_kernels, self._dims, indices, rng
+        )
         self._state = _reset_statevector(
             self._state, idx, indices, self._dims, self._apply_local
         )
@@ -336,6 +332,8 @@ class NumpyDMEngine(_NumpyMatrixEngine):
 
     def __init__(self, name: str = "numpy-dm"):
         super().__init__(name)
+
+    _measurement_kernels = _DM_MEASUREMENT
 
     _allocate = staticmethod(_allocate_density_matrix)
 
@@ -371,18 +369,6 @@ class NumpyDMEngine(_NumpyMatrixEngine):
             rho, matrix, targets, self._dims, self._reversed_dims
         )
 
-    def probabilities(self) -> np.ndarray:
-        return _density_matrix_probabilities(self.state)
-
-    def collapse(
-        self, measured_subsystems: Sequence[int], rng: np.random.Generator
-    ) -> int:
-        rho = self.state
-        size = rho.shape[0]
-        idx = int(rng.choice(size, p=self.probabilities()))
-        self._state = _project_density_matrix(rho, idx, measured_subsystems, self._dims)
-        return idx
-
     def reset_subsystems(
         self, indices: Sequence[int], rng: np.random.Generator | None = None
     ) -> None:
@@ -408,27 +394,10 @@ class _NumpyOperatorEngine(_NumpyMatrixEngine):
     the concrete engines supply operator allocation and numerical operations.
     """
 
-    def probabilities(self) -> np.ndarray:
-        """Unsupported: an operator is a map, not a distribution over states."""
-        raise NotImplementedError(
-            f"{self._state_field} execution has no basis-state distribution"
-        )
-
-    def collapse(
-        self, measured_subsystems: Sequence[int], rng: np.random.Generator
-    ) -> int:
-        """Unsupported: an operator cannot be projected onto one outcome."""
-        raise NotImplementedError(
-            f"{self._state_field} execution cannot represent a measurement"
-        )
+    _measurement_kernels = None
 
 
-# Pylint treats the inherited probabilities/collapse methods, which deliberately
-# raise NotImplementedError, as abstract. Operator engines reuse state kernels
-# but intentionally do not support sampling or measurement.
-class NumpyUnitaryEngine(  # pylint: disable=abstract-method
-    _NumpyOperatorEngine, NumpySVEngine
-):
+class NumpyUnitaryEngine(_NumpyOperatorEngine, NumpySVEngine):
     """Unitary engine: evolves ``U`` as a ``(size, size)`` operator matrix.
 
     Column ``j`` of ``U`` is the statevector ``U|j>``, so the whole operator is
@@ -461,11 +430,7 @@ class NumpyUnitaryEngine(  # pylint: disable=abstract-method
         return _apply_unitary(state, matrix, targets, self._dims, self._reversed_dims)
 
 
-# As for NumpyUnitaryEngine, the inherited sampling methods are unsupported,
-# rather than missing implementations in this concrete operator engine.
-class NumpySuperopEngine(  # pylint: disable=abstract-method
-    _NumpyOperatorEngine, NumpyDMEngine
-):
+class NumpySuperopEngine(_NumpyOperatorEngine, NumpyDMEngine):
     """Super-operator engine: evolves ``S`` as a ``(size**2, size**2)`` matrix.
 
     Internally, column ``b`` of ``S`` is the row-stacked image of basis matrix
@@ -510,7 +475,7 @@ class NumpySuperopEngine(  # pylint: disable=abstract-method
         """Return ``M_T . M_T^dagger`` applied to every column at once."""
         return _apply_superoperator(
             rho, matrix, targets, self._dims, self._reversed_dims
-        )
+            )
 
     def reset_subsystems(
         self, indices: Sequence[int], rng: np.random.Generator | None = None

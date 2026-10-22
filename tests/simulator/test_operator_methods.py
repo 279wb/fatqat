@@ -727,24 +727,6 @@ def test_backend_instance_is_reusable_across_system_sizes(runtime):
 
 
 @pytest.mark.parametrize("method", ["unitary", "superop"])
-def test_operator_engine_rejects_sampling_without_changing_state(method, runtime):
-    engine = Simulator(method, runtime=runtime)._engine
-    engine.initialize((2,))
-    before = engine.state.copy()
-    rng = np.random.default_rng(17)
-    operations = (
-        (engine.probabilities, ()),
-        (engine.sample_indices, (3, rng)),
-        (engine.collapse, ([0], rng)),
-        (engine.measure_subsystems, ([0], rng)),
-    )
-    for operation, args in operations:
-        with pytest.raises(NotImplementedError, match=f"{method} execution"):
-            operation(*args)
-        assert np.array_equal(engine.state, before)
-
-
-@pytest.mark.parametrize("method", ["unitary", "superop"])
 def test_measurement_is_rejected(method, runtime):
     program = Program(2, 2)
     program.add(ops.H, 0)

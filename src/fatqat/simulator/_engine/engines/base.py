@@ -32,6 +32,7 @@ from .._execution_policy import (
 from ..parallel import _run_shots_in_processes
 from ..state import EvolutionState, QuantumDataT
 from ..workflows.python import (
+    _MeasurementKernels,
     _PreparedPythonExecution,
     _run_operator_plan,
     _run_single_pass,
@@ -47,6 +48,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
     """
 
     # Concrete engines declare all support; numeric/execution helpers may be shared.
+    _measurement_kernels: _MeasurementKernels[QuantumDataT] | None
     _capabilities: _EngineCapabilities
 
     def __init__(self, name: str):
@@ -311,7 +313,8 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
                         self,
                         payload.plan,
                         payload.deferred_measurements,
-                        self._evolution_state.classical,
+                        self._evolution_state,
+                        self._measurement_kernels,
                         context,
                         rng,
                         state_requested=state_requested,
@@ -374,7 +377,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         """Initialize each trajectory within the caller's active runtime scope.
 
         Local and process entries share this lifecycle. The workflow borrows the
-        current classical container; the engine retains quantum storage and caches.
+        current evolution container; the engine retains its lifetime and caches.
         """
         snapshots = []
         for seed_sequence in seed_sequences:
@@ -388,23 +391,13 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
                 _run_one_shot(
                     self,
                     plan,
-                    self._evolution_state.classical,
+                    self._evolution_state,
+                    self._measurement_kernels,
                     context,
                     np.random.default_rng(seed_sequence),
                 )
             )
         return snapshots
-
-    @abstractmethod
-    def measure_subsystems(
-        self, indices: Sequence[int], rng: np.random.Generator
-    ) -> tuple[int, ...]: ...
-
-    def measure_subsystem(self, index: int, rng: np.random.Generator) -> int:
-        """
-        Measure a single subsystem and return the result.
-        """
-        return self.measure_subsystems([index], rng)[0]
 
     @abstractmethod
     def reset_subsystems(
@@ -416,16 +409,6 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         Reset a single subsystem to the |0> state.
         """
         self.reset_subsystems([index], rng)
-
-    @abstractmethod
-    def probabilities(self) -> np.ndarray:
-        """Return the computational-basis probability distribution of the state."""
-
-    @abstractmethod
-    def collapse(
-        self, measured_subsystems: Sequence[int], rng: np.random.Generator
-    ) -> int:
-        """Sample one outcome, project the internal state, return the flat index."""
 
     @abstractmethod
     def apply(self, step: ApplyMatrixStep) -> None:
@@ -484,7 +467,3 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
                 ),
             ),
         )
-
-    @abstractmethod
-    def sample_indices(self, shots: int, rng: np.random.Generator) -> np.ndarray:
-        """Return sampled flat basis-state indices as a NumPy array."""

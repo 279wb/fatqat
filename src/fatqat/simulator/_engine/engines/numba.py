@@ -2,7 +2,7 @@
 
 `NumbaSVEngine` (statevector) and `NumbaDMEngine` (density matrix) reuse
 shared materialization and Python execution from ``MatrixEngine`` and
-``initialize`` / ``measure_subsystems`` operations from their NumPy twins,
+initialization from their NumPy twins,
 while replacing numeric kernels with Numba-jitted loops. `NumbaUnitaryEngine`
 and `NumbaSuperopEngine` then reuse *those* kernels for the operator
 representations, overriding only the apply plan (see the operator-engine
@@ -18,11 +18,10 @@ density matrix derives its table from the same declarations because the
 Kronecker product preserves structure (see below).
 
 - `NumbaSVEngine` replaces gate application (`apply` / `_apply_local`),
-  `probabilities`, `sample_indices`, `collapse`, and `reset_subsystems`.
-  ``measure_subsystems`` delegates to collapse; reset uses direct digit shifts
-  shared with the compiled trajectory path.
-- `NumbaDMEngine` replaces `apply` / `apply_channel`, `probabilities`,
-  `sample_indices`, and `collapse`. It reuses the *same* coset-walk kernels as
+  `reset_subsystems`, and selects Numba measurement functions.
+  Reset uses direct digit shifts shared with the compiled trajectory path.
+- `NumbaDMEngine` replaces `apply` / `apply_channel` and selects Numba
+  measurement functions. It reuses the *same* coset-walk kernels as
   the statevector path by viewing ``rho`` (shape ``(size, size)``) as a flat
   vector over a doubled ``2n``-subsystem system: ``n`` bra subsystems (strides
   ``prod(dims[:q])``) then ``n`` ket subsystems (strides ``size *
@@ -133,14 +132,13 @@ from ..numerics.numba._fusion import (
     _fuse_gate_channels,
     _fuse_operator_payloads,
 )
+from ..numerics.numba._measurement import _sv_reset_kernel
 from ..numerics.numba._measurement import (
-    _sample_index_kernel,
-    _sample_indices_kernel,
     _sv_probabilities_kernel,
-    _sv_project_kernel,
-    _sv_reset_kernel,
     _dm_probabilities_kernel,
-    _dm_project_kernel,
+    _project_statevector,
+    _project_density_matrix,
+    _sample_basis_indices,
 )
 from ..numerics.numba._preparation import (
     _MatrixStructureCache,
@@ -157,7 +155,7 @@ from .numpy import (
     NumpySVEngine,
     NumpyUnitaryEngine,
 )
-from ..workflows.python import _PreparedPythonExecution
+from ..workflows.python import _MeasurementKernels, _PreparedPythonExecution
 from ..workflows.numba.operators import (
     _operator_chunks,
     _pack_operator_plan,
@@ -169,6 +167,14 @@ from ..workflows.numba.trajectories import (
     _compile_dynamic_plan,
     _execute_sv_trajectories,
     _plan_compilable,
+)
+
+# Select stateless functions once; trajectory initialization binds no callbacks.
+_SV_MEASUREMENT = _MeasurementKernels(
+    _sv_probabilities_kernel, _project_statevector, _sample_basis_indices
+)
+_DM_MEASUREMENT = _MeasurementKernels(
+    _dm_probabilities_kernel, _project_density_matrix, _sample_basis_indices
 )
 
 
@@ -280,6 +286,8 @@ class NumbaSVEngine(NumpySVEngine):
             fusion=simulation_config.fusion,
             workflow="numba_trajectories",
         )
+
+    _measurement_kernels = _SV_MEASUREMENT
 
     def __init__(self, name: str = "numba-sv"):
         super().__init__(name)
@@ -477,24 +485,6 @@ class NumbaSVEngine(NumpySVEngine):
             force_parallel=force_parallel,
         )
 
-    def probabilities(self) -> np.ndarray:
-        return _sv_probabilities_kernel(np.ascontiguousarray(self.state))
-
-    def sample_indices(self, shots: int, rng: np.random.Generator) -> np.ndarray:
-        """Sample ``shots`` flat indices: draw uniforms in NumPy, invert in Numba."""
-        return _sample_indices_kernel(self.probabilities(), rng.random(shots))
-
-    def collapse(
-        self, measured_subsystems: Sequence[int], rng: np.random.Generator
-    ) -> int:
-        """Sample one outcome, project onto it in Numba, return the flat index."""
-        index = int(_sample_index_kernel(self.probabilities(), float(rng.random())))
-        strides, dims = _measured_layout(self._dims, measured_subsystems)
-        self._state = _sv_project_kernel(
-            np.ascontiguousarray(self.state), strides, dims, index
-        )
-        return index
-
     def reset_subsystems(
         self, indices: Sequence[int], rng: np.random.Generator
     ) -> None:
@@ -543,6 +533,8 @@ class NumbaDMEngine(NumpyDMEngine):
         ),
         supports_process_shots=True,
     )
+
+    _measurement_kernels = _DM_MEASUREMENT
 
     def __init__(self, name: str = "numba-dm"):
         super().__init__(name)
@@ -698,24 +690,6 @@ class NumbaDMEngine(NumpyDMEngine):
         """
         self._apply_superop(step)
 
-    def probabilities(self) -> np.ndarray:
-        return _dm_probabilities_kernel(np.ascontiguousarray(self.state))
-
-    def sample_indices(self, shots: int, rng: np.random.Generator) -> np.ndarray:
-        """Sample ``shots`` flat indices: draw uniforms in NumPy, invert in Numba."""
-        return _sample_indices_kernel(self.probabilities(), rng.random(shots))
-
-    def collapse(
-        self, measured_subsystems: Sequence[int], rng: np.random.Generator
-    ) -> int:
-        """Sample one outcome, project onto it in Numba, return the flat index."""
-        index = int(_sample_index_kernel(self.probabilities(), float(rng.random())))
-        strides, dims = _measured_layout(self._dims, measured_subsystems)
-        self._state = _dm_project_kernel(
-            np.ascontiguousarray(self.state), strides, dims, index
-        )
-        return index
-
 
 # --- operator engines ---
 #
@@ -778,9 +752,8 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
             workflow="numba_operator",
         )
 
-    # State-engine reuse must not override the operator measurement contract.
-    probabilities = _NumpyOperatorEngine.probabilities
-    collapse = _NumpyOperatorEngine.collapse
+    # Operator representations must not inherit state-measurement functions.
+    _measurement_kernels = None
 
     def materialize_execution(
         self,

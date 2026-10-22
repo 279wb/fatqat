@@ -62,22 +62,23 @@ def test_auto_execution_without_process_support():
 
 def test_workers_preserve_configuration_without_copying_runtime_state():
     class ConfiguredEngine(NumpySVEngine):
-        def __init__(self, *, readout_flip):
+        def __init__(self, *, initial_digit):
             super().__init__()
-            self._readout_flip = readout_flip
+            self._initial_digit = initial_digit
             # A live runtime resource must be recreated in each worker.
             self._runtime_lock = Lock()
 
         def _process_engine_factory(self):
-            return partial(type(self), readout_flip=self._readout_flip)
+            return partial(type(self), initial_digit=self._initial_digit)
 
-        def measure_subsystems(self, indices, rng):
+        def initialize(self, system_dims, n_clbits=0, *, initial_state=None):
             with self._runtime_lock:
-                digits = super().measure_subsystems(indices, rng)
-            return tuple(digit ^ self._readout_flip for digit in digits)
+                super().initialize(system_dims, n_clbits, initial_state=initial_state)
+                self.state[:] = 0
+                self.state[self._initial_digit] = 1
 
     backend = Simulator("SV", runtime="numpy")
-    backend._engine = ConfiguredEngine(readout_flip=1)
+    backend._engine = ConfiguredEngine(initial_digit=1)
     program = fq.Program(1, 1)
     program.measure(0, 0)
     program.add(ops.Reset, 0)

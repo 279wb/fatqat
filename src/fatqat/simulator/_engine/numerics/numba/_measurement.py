@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from math import sqrt
 
 import numpy as np
 from numba import njit
+
+from ._preparation import _measured_layout
 
 # --- shared sampling ---
 
@@ -235,3 +238,33 @@ def _dm_project_kernel(
                 if keep[j]:
                     out[i, j] = rho[i, j] * scale
     return out
+
+
+# --- Python-workflow adapters (compiled workflows use the kernels above) ---
+
+
+def _project_statevector(
+    state: np.ndarray, index: int, indices: Sequence[int], dims: Sequence[int]
+) -> np.ndarray:
+    strides, measured_dims = _measured_layout(dims, indices)
+    return _sv_project_kernel(
+        np.ascontiguousarray(state), strides, measured_dims, index
+    )
+
+
+def _project_density_matrix(
+    state: np.ndarray, index: int, indices: Sequence[int], dims: Sequence[int]
+) -> np.ndarray:
+    strides, measured_dims = _measured_layout(dims, indices)
+    return _dm_project_kernel(
+        np.ascontiguousarray(state), strides, measured_dims, index
+    )
+
+
+def _sample_basis_indices(
+    probabilities: np.ndarray, rng: np.random.Generator, shots: int | None
+) -> int | np.ndarray:
+    """Draw uniforms from the workflow's stream and invert their CDF in Numba."""
+    if shots is None:
+        return int(_sample_index_kernel(probabilities, float(rng.random())))
+    return _sample_indices_kernel(probabilities, rng.random(shots))

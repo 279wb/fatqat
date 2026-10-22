@@ -3,6 +3,13 @@
 import numpy as np
 import pytest
 
+from fatqat.program import Program
+from fatqat.simulator import Simulator
+import fatqat.operations as ops
+from fatqat.simulator._engine.numerics.numpy._measurement import (
+    _density_matrix_probabilities,
+)
+
 from fatqat.simulator._engine.engines.numpy import NumpyDMEngine, NumpySVEngine
 from fatqat._backends.steps import ApplyMatrixStep
 
@@ -76,24 +83,30 @@ def test_apply_matrix_rho_qutrit():
 
 
 def test_probabilities_are_diagonal():
-    eng = _engine(2)
-    eng.apply(ApplyMatrixStep(matrix=_H, target_indices=(0,)))
-    eng.apply(ApplyMatrixStep(matrix=_CX, target_indices=(0, 1)))
-    assert np.allclose(eng.probabilities(), [0.5, 0, 0, 0.5])
+    bell = np.array([1, 0, 0, 1], dtype=complex) / np.sqrt(2)
+    assert np.allclose(_density_matrix_probabilities(_pure(bell)), [0.5, 0, 0, 0.5])
 
 
-def test_measure_subsystems_collapses_bell_pair_consistently():
-    rng = np.random.default_rng(7)
-    for _ in range(5):
-        eng = _engine(2)
-        eng.apply(ApplyMatrixStep(matrix=_H, target_indices=(0,)))
-        eng.apply(ApplyMatrixStep(matrix=_CX, target_indices=(0, 1)))
-        b0, b1 = eng.measure_subsystems((0, 1), rng)
-        assert b0 == b1
-        idx = b0 + 2 * b1
+@pytest.mark.parametrize("runtime", ["numpy", "numba"])
+def test_measurement_counts_agree_with_collapsed_bell_state(runtime):
+    program = Program(2, 2)
+    program.add(ops.H, 0)
+    program.add(ops.CX, (0, 1))
+    program.measure((0, 1), (0, 1))
+    simulator = Simulator("DM", runtime=runtime)
+    for seed in range(5):
+        result = simulator.run(
+            program,
+            shots=1,
+            simulation_config={"seed": seed},
+            result_config={"counts": True, "final_state": True},
+        ).result()
+        counts = result.get_counts()
+        assert counts in ({"00": 1}, {"11": 1})
+        index = 0 if "00" in counts else 3
         expected = np.zeros((4, 4), dtype=complex)
-        expected[idx, idx] = 1.0
-        assert np.allclose(eng.export_state(), expected)
+        expected[index, index] = 1
+        assert np.allclose(result.get_density_matrix(), expected)
 
 
 def test_reset_is_deterministic_and_consumes_no_rng():
