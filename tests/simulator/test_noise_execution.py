@@ -604,7 +604,7 @@ def test_numba_compiled_multi_shot_plan_matches_numpy_channels():
             n_clbits=context.n_clbits,
             policy=policy,
         )
-        raw = simulator.execute_local(
+        raw = simulator.execute_in_process(
             context,
             payload,
             policy,

@@ -1,8 +1,7 @@
 """Shared Python state and operator sequencing for matrix-family numerical runtimes.
 
-Functions receive explicit evolution state and execution data. Measurement uses
-stateless numerical functions, as does reset; gates and channels use the engine's
-operation contract. The engine owns initialization and export; workflows never
+Functions receive explicit evolution state and execution data. Gates, channels,
+measurement, and reset use numerical functions carried by the Python execution. The engine owns initialization and export; workflows never
 inspect or convert quantum arrays. NumPy handles host randomness and results.
 """
 
@@ -11,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from math import prod
-from typing import Generic, NamedTuple, Protocol
+from typing import Generic, NamedTuple
 
 import numpy as np
 
@@ -59,30 +58,30 @@ _ResetKernel = Callable[
 ]
 
 
-class _PythonOperations(Protocol):
-    """Numerical operations needed by Python sequencing, supplied by the engine.
-
-    This is a structural typing contract, not a wrapper or a runtime dispatcher.
-    Gate and channel implementations retain quantum storage in its native
-    runtime. Measurement and reset are supplied as numerical functions.
-    """
-
-    def apply(self, step: ApplyMatrixStep) -> None: ...
-
-    def apply_channel(
-        self, step: ApplyChannelStep, rng: np.random.Generator
-    ) -> None: ...
+_MatrixKernel = Callable[[QuantumDataT, ApplyMatrixStep, Sequence[int]], QuantumDataT]
 
 
-class _PreparedPythonExecution(NamedTuple):
-    """Effective plan and deferred measurements for Python-driven execution.
+_ChannelKernel = Callable[
+    [QuantumDataT, ApplyChannelStep, Sequence[int], np.random.Generator], QuantumDataT
+]
 
-    Retains the prepared plan without copying steps or numerical arrays. Numba
-    engines carry this same record alongside their runtime-specific preparation.
+
+class _PythonExecution(NamedTuple):
+    # TODO: Consider separate the kernels from the plan
+    """Plan and numerical bindings used only by Python sequencing.
+
+    Callables receive native state explicitly and never retain an engine.
+    Bound numerical resources, including target layouts, live with this payload;
+    preparing another execution cannot replace its layouts or scheduling choices.
+    Compiled workflows use their own packed data without these bindings.
     """
 
     plan: tuple[ResolvedStep, ...]
     deferred_measurements: tuple[tuple[int, int], ...]
+    apply_matrix: _MatrixKernel
+    apply_channel: _ChannelKernel | None
+    measurement: _MeasurementKernels | None
+    reset: _ResetKernel | None
 
 
 # --- physical measurement sequencing ---
@@ -155,12 +154,8 @@ def _condition_matches(
 
 
 def _run_single_pass(
-    operations: _PythonOperations,
-    plan: Sequence[ResolvedStep],
-    measurements: Sequence[tuple[int, int]],
+    execution: _PythonExecution,
     state: EvolutionState[QuantumDataT],
-    measurement_kernels: _MeasurementKernels[QuantumDataT] | None,
-    reset_kernel: _ResetKernel[QuantumDataT] | None,
     context: ExecutionContext,
     rng: np.random.Generator,
     *,
@@ -174,21 +169,26 @@ def _run_single_pass(
     path.
     """
     classical = state.classical
-    for step in plan:
+    for step in execution.plan:
         if isinstance(step, ApplyMatrixStep):
-            operations.apply(step)
+            state.quantum = execution.apply_matrix(
+                state.quantum, step, context.system_dims
+            )
         elif isinstance(step, ApplyChannelStep):
-            operations.apply_channel(step, rng)
+            state.quantum = execution.apply_channel(
+                state.quantum, step, context.system_dims, rng
+            )
         elif isinstance(step, ResetStep):
             _reset_subsystems(
-                state, reset_kernel, context.system_dims, step.reset_indices, rng
+                state, execution.reset, context.system_dims, step.reset_indices, rng
             )
 
+    measurements = execution.deferred_measurements
     collapsed_index: int | None = None
     if state_requested and measurements:
         collapsed_index = _collapse(
             state,
-            measurement_kernels,
+            execution.measurement,
             context.system_dims,
             [q for q, _ in measurements],
             rng,
@@ -201,7 +201,7 @@ def _run_single_pass(
         elif collapsed_index is not None:
             indices = np.array([collapsed_index], dtype=int)
         else:
-            indices = _sample_indices(state, measurement_kernels, context.shots, rng)
+            indices = _sample_indices(state, execution.measurement, context.shots, rng)
         rows = _decode_engine_indices_to_clbit_rows(
             indices, measurements, context.system_dims, context.n_clbits
         )
@@ -210,16 +210,13 @@ def _run_single_pass(
             for clbit, digit in enumerate(classical.clbits):
                 if clbit not in written:
                     rows[:, clbit] = digit
-        _apply_measurement_reporting(rows, _reporting_by_clbit(plan), rng)
+        _apply_measurement_reporting(rows, _reporting_by_clbit(execution.plan), rng)
     return rows
 
 
 def _run_one_shot(
-    operations: _PythonOperations,
-    plan: Sequence[ResolvedStep],
+    execution: _PythonExecution,
     state: EvolutionState[QuantumDataT],
-    measurement_kernels: _MeasurementKernels[QuantumDataT] | None,
-    reset_kernel: _ResetKernel[QuantumDataT] | None,
     context: ExecutionContext,
     rng: np.random.Generator,
 ) -> tuple[int, ...]:
@@ -234,7 +231,7 @@ def _run_one_shot(
     classical = state.classical
     clbits = classical.clbits
     occupied = classical.occupied
-    for step in plan:
+    for step in execution.plan:
         if clbits is None and (
             isinstance(step, MeasurementStep) or step.condition is not None
         ):
@@ -244,12 +241,16 @@ def _run_one_shot(
             occupied is None or all(t in occupied for t in step.target_indices)
         ):
             if _condition_matches(step.condition, clbits):
-                operations.apply(step)
+                state.quantum = execution.apply_matrix(
+                    state.quantum, step, context.system_dims
+                )
         elif isinstance(step, ApplyChannelStep) and (
             occupied is None or all(t in occupied for t in step.target_indices)
         ):
             if _condition_matches(step.condition, clbits):
-                operations.apply_channel(step, rng)
+                state.quantum = execution.apply_channel(
+                    state.quantum, step, context.system_dims, rng
+                )
         elif isinstance(step, LossStep):
             if _condition_matches(step.condition, clbits):
                 if occupied is None:
@@ -259,7 +260,7 @@ def _run_one_shot(
                     if index in occupied and rng.random() < step.p:
                         occupied.discard(index)
                         _reset_subsystems(
-                            state, reset_kernel, context.system_dims, (index,), rng
+                            state, execution.reset, context.system_dims, (index,), rng
                         )
         elif isinstance(step, PutStep):
             if _condition_matches(step.condition, clbits) and occupied is not None:
@@ -267,13 +268,13 @@ def _run_one_shot(
                     if index not in occupied:
                         occupied.add(index)
                         _reset_subsystems(
-                            state, reset_kernel, context.system_dims, (index,), rng
+                            state, execution.reset, context.system_dims, (index,), rng
                         )
         elif isinstance(step, MeasurementStep):
             assert clbits is not None, "measurement requires classical digits"
             bits = _measure_subsystems(
                 state,
-                measurement_kernels,
+                execution.measurement,
                 context.system_dims,
                 step.measured_indices,
                 rng,
@@ -300,22 +301,20 @@ def _run_one_shot(
                 occupied is None or all(t in occupied for t in step.reset_indices)
             ):
                 _reset_subsystems(
-                    state, reset_kernel, context.system_dims, step.reset_indices, rng
+                    state, execution.reset, context.system_dims, step.reset_indices, rng
                 )
     # Unwritten report digits are zero even when no register was needed.
     return tuple(clbits) if clbits is not None else (0,) * context.n_clbits
 
 
 def _run_operator_plan(
-    operations: _PythonOperations,
-    plan: Sequence[ResolvedStep],
+    execution: _PythonExecution,
     state: EvolutionState[QuantumDataT],
-    reset_kernel: _ResetKernel[QuantumDataT] | None,
     dims: Sequence[int],
     rng: np.random.Generator,
 ) -> None:
     """Apply an operator plan to already-initialized native storage."""
-    for step in plan:
+    for step in execution.plan:
         assert not isinstance(
             step, MeasurementStep
         ), "operator execution cannot represent a measurement"
@@ -323,10 +322,10 @@ def _run_operator_plan(
             step.condition is None
         ), "operator execution cannot represent a feedforward condition"
         if isinstance(step, ApplyMatrixStep):
-            operations.apply(step)
+            state.quantum = execution.apply_matrix(state.quantum, step, dims)
         elif isinstance(step, ApplyChannelStep):
-            operations.apply_channel(step, rng)
+            state.quantum = execution.apply_channel(state.quantum, step, dims, rng)
         elif isinstance(step, ResetStep):
-            _reset_subsystems(state, reset_kernel, dims, step.reset_indices, rng)
+            _reset_subsystems(state, execution.reset, dims, step.reset_indices, rng)
         else:
             raise TypeError(f"unknown resolved execution step {type(step).__name__}")

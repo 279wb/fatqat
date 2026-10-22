@@ -12,6 +12,7 @@ from .._execution_contract import (
     _ExecutionContext as ExecutionContext,
     _InitialEvolutionState as InitialEvolutionState,
 )
+from ..._backends.steps import ResolvedStep
 from ._execution_policy import (
     _ExecutionPolicy as ExecutionPolicy,
     _process_child_policy,
@@ -21,6 +22,15 @@ if TYPE_CHECKING:
     from typing import Protocol
 
     class _ProcessEngine(Protocol):
+        def materialize_execution(
+            self,
+            plan: tuple[ResolvedStep, ...],
+            *,
+            system_dims: tuple[int, ...],
+            n_clbits: int,
+            policy: ExecutionPolicy,
+        ) -> Any: ...
+
         def execute_shot_batch(
             self,
             context: ExecutionContext,
@@ -64,12 +74,20 @@ def _split_into_batches(
 def _run_shot_batch(
     engine_factory: Callable[[], _ProcessEngine],
     context: ExecutionContext,
-    payload: Any,
+    plan: tuple[ResolvedStep, ...],
     seed_batch: list[np.random.SeedSequence],
     child_policy: ExecutionPolicy,
     initial_state: InitialEvolutionState,
 ) -> list[tuple[int, ...]]:
     engine = engine_factory()
+    # Bind worker-local numerical resources once for the whole batch. No parent
+    # callbacks, caches, or device allocations cross the process boundary.
+    payload = engine.materialize_execution(
+        plan,
+        system_dims=context.system_dims,
+        n_clbits=context.n_clbits,
+        policy=child_policy,
+    )
     return engine.execute_shot_batch(
         context, payload, seed_batch, child_policy, initial_state=initial_state
     )
@@ -87,7 +105,7 @@ def _loky_executor(max_workers: int):
 def _run_shots_in_processes(
     engine_factory: Callable[[], _ProcessEngine],
     context: ExecutionContext,
-    payload: Any,
+    plan: tuple[ResolvedStep, ...],
     policy: ExecutionPolicy,
     initial_state: InitialEvolutionState,
 ) -> list[tuple[int, ...]]:
@@ -105,7 +123,7 @@ def _run_shots_in_processes(
         _run_shot_batch,
         repeat(engine_factory),
         repeat(context),
-        repeat(payload),
+        repeat(plan),
         batches,
         repeat(child),
         repeat(initial_state),

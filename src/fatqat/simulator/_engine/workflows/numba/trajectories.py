@@ -39,7 +39,7 @@ from ...numerics.numba._measurement import (
 from ...state import NumbaClassicalState, NumbaEvolutionState
 
 
-class _PreparedSVTrajectories(NamedTuple):
+class _NumbaTrajectoryExecution(NamedTuple):
     """Packed arrays and per-shot draw budget for the compiled SV workflow.
 
     This record stays on the host; the compiled entry receives the original
@@ -85,7 +85,7 @@ def _compile_dynamic_plan(
     dims: tuple[int, ...],
     build_apply_plan: Callable[[tuple[int, ...]], tuple],
     resolve_structure: Callable[[ApplyMatrixStep], tuple],
-) -> _PreparedSVTrajectories:
+) -> _NumbaTrajectoryExecution:
     """Flatten a plan into typed arrays for `_run_sv_trajectories`.
 
     Uses the supplied numerical layout builder; measurement/reset carry their
@@ -231,12 +231,12 @@ def _compile_dynamic_plan(
     )
     num_confusions = int(np.count_nonzero(me_conf_ptr >= 0))
     max_draws = num_measurements + num_confusions + num_resets + len(channel_entries)
-    return _PreparedSVTrajectories(plan_arrays, max_draws)
+    return _NumbaTrajectoryExecution(plan_arrays, max_draws)
 
 
 def _execute_sv_trajectories(
     context: ExecutionContext,
-    compiled: _PreparedSVTrajectories,
+    compiled: _NumbaTrajectoryExecution,
     *,
     initial_state: InitialEvolutionState[np.ndarray],
 ) -> np.ndarray:

@@ -146,7 +146,7 @@ def _counts(engine_cls, plan, dims, n_clbits, shots, seed, request):
         n_clbits=context.n_clbits,
         policy=policy,
     )
-    raw = simulator.execute_local(
+    raw = simulator.execute_in_process(
         context,
         payload,
         policy,
@@ -228,10 +228,8 @@ def test_dense_declaration_stays_correct_at_special_parameters():
     assert np.allclose(simulator.export_state(), [0.0, -1.0j])
 
 
-def test_fallback_path_matches_the_standard_path():
-    # apply(step) (standard, key-aware, cached) and _apply_local (matrix-only
-    # fallback used by reset shifts and Kraus branches) must produce the same
-    # state through the same resolved kernels.
+def test_deterministic_channel_matches_equivalent_gate():
+    # A gate and a deterministic channel implementing the same matrix agree.
     matrix = np.array([[0, 1], [1, 0]], dtype=complex)
     standard = NumbaSVEngine()
     standard.initialize((2, 2), 0)
@@ -242,27 +240,34 @@ def test_fallback_path_matches_the_standard_path():
     )
     fallback = NumbaSVEngine()
     fallback.initialize((2, 2), 0)
-    fallback._state = fallback._apply_local(fallback.state, matrix, (1,))
+    fallback.apply_channel(
+        ApplyChannelStep(kraus_ops=(matrix,), target_indices=(1,)),
+        np.random.default_rng(0),
+    )
 
     assert np.array_equal(standard.export_state(), fallback.export_state())
 
 
-def test_structure_cache_pins_steps_and_reuses_resolutions():
-    simulator = NumbaSVEngine()
-    simulator.initialize((2,), 0)
+def test_structure_cache_retains_source_until_plan_pruned():
+    from fatqat.simulator._engine.numerics.numba._preparation import (
+        _MatrixStructureCache,
+    )
+
+    cache = _MatrixStructureCache()
     step = ApplyMatrixStep(
         matrix=np.eye(2, dtype=complex),
         target_indices=(0,),
         kernel_key=BuiltinKernelKey.I,
     )
-    first = simulator._resolve_structure(step)
-    # Trajectory initialization resets state without discarding this plan's work.
-    simulator.initialize((2,), 0)
-    assert simulator._resolve_structure(step) is first  # cached, not re-resolved
+    cache.resolve(step)
     step_ref = weakref.ref(step)
     del step
     gc.collect()
-    assert step_ref() is not None  # resolution pins its source step
+    # Pinning the source prevents recycled step identities from aliasing.
+    assert step_ref() is not None
+    cache.retain(())
+    gc.collect()
+    assert step_ref() is None
 
 
 def _reconstruct(csr, d):

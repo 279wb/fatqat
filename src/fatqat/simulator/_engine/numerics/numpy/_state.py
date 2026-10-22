@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from math import prod
+from functools import partial
 
 import numpy as np
 
-from ....._backends.steps import ApplyChannelStep, ResolvedStep
+from ....._backends.steps import ApplyChannelStep, ApplyMatrixStep, ResolvedStep
 from .....implementation.matrices import shift_matrix
 from .....noise.base import _sampled_unitary_branches
 from ._measurement import _project_statevector, _statevector_probabilities
@@ -352,3 +353,105 @@ def _reset_superoperator(
             )
         state = result
     return state
+
+
+# --- Python-facing matrix operations ---
+# TODO: Reuse reversed dimensions instead of rebuilding them per gate.
+
+
+def _apply_matrix_statevector(
+    state: np.ndarray,
+    step: ApplyMatrixStep,
+    dims: Sequence[int],
+) -> np.ndarray:
+    """Apply one gate to a statevector from Python workflow operands."""
+    return _apply_statevector(
+        state, step.matrix, step.target_indices, dims, tuple(reversed(dims))
+    )
+
+
+def _apply_matrix_density_matrix(
+    state: np.ndarray,
+    step: ApplyMatrixStep,
+    dims: Sequence[int],
+) -> np.ndarray:
+    """Apply one gate to a density matrix from Python workflow operands."""
+    return _apply_density_matrix(
+        state, step.matrix, step.target_indices, dims, tuple(reversed(dims))
+    )
+
+
+def _apply_matrix_unitary(
+    state: np.ndarray,
+    step: ApplyMatrixStep,
+    dims: Sequence[int],
+) -> np.ndarray:
+    """Apply one gate to a unitary operator from Python workflow operands."""
+    return _apply_unitary(
+        state, step.matrix, step.target_indices, dims, tuple(reversed(dims))
+    )
+
+
+def _apply_matrix_superoperator(
+    state: np.ndarray,
+    step: ApplyMatrixStep,
+    dims: Sequence[int],
+) -> np.ndarray:
+    """Apply one gate to a superoperator from Python workflow operands."""
+    return _apply_superoperator(
+        state, step.matrix, step.target_indices, dims, tuple(reversed(dims))
+    )
+
+
+# --- Python-facing channel operations ---
+
+
+def _apply_channel_statevector(
+    state: np.ndarray,
+    step: ApplyChannelStep,
+    dims: Sequence[int],
+    rng: np.random.Generator,
+    *,
+    routes: _ChannelRouteCache,
+) -> np.ndarray:
+    """Sample one branch, using fixed probabilities for scaled unitaries.
+
+    Both routes consume one draw. General Kraus branches start from independent
+    state copies so in-place numerical implementations cannot corrupt the source.
+    """
+    apply_matrix = partial(
+        _apply_statevector, dims=dims, reversed_dims=tuple(reversed(dims))
+    )
+    branches = routes.resolve(step)
+    if branches is None:
+        return _apply_kraus_jump(
+            state, step.kraus_ops, step.target_indices, rng, apply_matrix
+        )
+    matrix = _sample_unitary(branches, rng)
+    return state if matrix is None else apply_matrix(state, matrix, step.target_indices)
+
+
+def _apply_channel_density_matrix(
+    state: np.ndarray,
+    step: ApplyChannelStep,
+    dims: Sequence[int],
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Apply the exact Kraus sum without consuming randomness."""
+    apply_matrix = partial(
+        _apply_density_matrix, dims=dims, reversed_dims=tuple(reversed(dims))
+    )
+    return _apply_kraus_sum(state, step.kraus_ops, step.target_indices, apply_matrix)
+
+
+def _apply_channel_superoperator(
+    state: np.ndarray,
+    step: ApplyChannelStep,
+    dims: Sequence[int],
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Apply the exact Kraus sum to every accumulated operator column."""
+    apply_matrix = partial(
+        _apply_superoperator, dims=dims, reversed_dims=tuple(reversed(dims))
+    )
+    return _apply_kraus_sum(state, step.kraus_ops, step.target_indices, apply_matrix)

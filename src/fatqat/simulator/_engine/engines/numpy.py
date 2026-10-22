@@ -76,8 +76,6 @@ from ..._execution_contract import (
     _TrajectoryCapabilities,
 )
 from ...._backends.steps import (
-    ApplyChannelStep,
-    ApplyMatrixStep,
     ResolvedStep,
 )
 from .._execution_policy import (
@@ -95,24 +93,24 @@ from ..numerics.numpy._measurement import (
     _sample_basis_indices,
 )
 from ..numerics.numpy._state import (
+    _apply_channel_statevector,
+    _apply_channel_density_matrix,
+    _apply_channel_superoperator,
     _ChannelRouteCache,
     _ResetChannelCache,
     _allocate_statevector,
     _allocate_density_matrix,
     _allocate_unitary,
     _allocate_superoperator,
-    _apply_density_matrix,
-    _apply_kraus_jump,
-    _apply_kraus_sum,
-    _apply_statevector,
-    _apply_superoperator,
-    _apply_unitary,
+    _apply_matrix_statevector,
+    _apply_matrix_density_matrix,
+    _apply_matrix_unitary,
+    _apply_matrix_superoperator,
     _reset_density_matrix,
     _reset_statevector,
     _reset_superoperator,
-    _sample_unitary,
 )
-from ..workflows.python import _MeasurementKernels
+from ..workflows.python import _MeasurementKernels, _PythonExecution
 from ..state import ClassicalState, EvolutionState
 
 # --- shared NumPy operations ---
@@ -239,56 +237,26 @@ class NumpySVEngine(_NumpyMatrixEngine):
     def _retain_step_caches(self, plan: tuple[ResolvedStep, ...]) -> None:
         self._channel_routes.retain(plan)
 
-    _measurement_kernels = _MeasurementKernels(
-        _statevector_probabilities, _project_statevector, _sample_basis_indices
-    )
-
-    _reset_kernel = staticmethod(_reset_statevector)
     _allocate = staticmethod(_allocate_statevector)
 
-    def apply(self, step: ApplyMatrixStep) -> None:
-        self._state = self._apply_local(self.state, step.matrix, step.target_indices)
-
-    def apply_channel(self, step: ApplyChannelStep, rng: np.random.Generator) -> None:
-        """Sample one Kraus branch, by the cheapest sampler the operators allow.
-
-        A channel of scaled unitaries draws from a fixed probability vector;
-        everything else takes the general quantum-jump path. Both consume
-        exactly one rng draw.
-        """
-        branches = self._channel_routes.resolve(step)
-        if branches is None:
-            self._apply_kraus_jump(step, rng)
-        else:
-            unitary = _sample_unitary(branches, rng)
-            if unitary is not None:
-                self._state = self._apply_local(
-                    self.state, unitary, step.target_indices
-                )
-
-    def _apply_kraus_jump(
-        self, step: ApplyChannelStep, rng: np.random.Generator
-    ) -> None:
-        """Quantum-jump unravelling for a channel of general Kraus operators.
-
-        Each candidate branch ``K_i |psi>`` is produced by the same local-apply
-        primitive gates use; its squared norm is the branch probability. One
-        branch is drawn and kept, normalized.
-
-        Each branch starts from a fresh copy of the state: reusing
-        ``self.state`` across branches would let an in-place kernel (the Numba
-        subclass's) corrupt the source mid-loop.
-        """
-        self._state = _apply_kraus_jump(
-            self.state, step.kraus_ops, step.target_indices, rng, self._apply_local
-        )
-
-    def _apply_local(
-        self, state: np.ndarray, matrix: np.ndarray, targets: Sequence[int]
-    ) -> np.ndarray:
-        """Apply a local matrix to flat ``targets``, returning the new flat state."""
-        return _apply_statevector(
-            state, matrix, targets, self._dims, self._reversed_dims
+    def _bind_kernels_to_python_workflow(
+        self,
+        plan: tuple[ResolvedStep, ...],
+        measurements: tuple[tuple[int, int], ...] = (),
+        *,
+        policy: ExecutionPolicy | None = None,
+    ) -> _PythonExecution:
+        return _PythonExecution(
+            plan=plan,
+            deferred_measurements=measurements,
+            apply_matrix=_apply_matrix_statevector,
+            apply_channel=partial(
+                _apply_channel_statevector, routes=self._channel_routes
+            ),
+            measurement=_MeasurementKernels(
+                _statevector_probabilities, _project_statevector, _sample_basis_indices
+            ),
+            reset=_reset_statevector,
         )
 
 
@@ -312,43 +280,26 @@ class NumpyDMEngine(_NumpyMatrixEngine):
     def __init__(self, name: str = "numpy-dm"):
         super().__init__(name)
 
-    _measurement_kernels = _MeasurementKernels(
-        _density_matrix_probabilities, _project_density_matrix, _sample_basis_indices
-    )
-
-    _reset_kernel = staticmethod(_reset_density_matrix)
     _allocate = staticmethod(_allocate_density_matrix)
 
-    def apply(self, step: ApplyMatrixStep) -> None:
-        """Apply ``rho' = U_T rho U_T^dagger`` without materializing ``U_T``."""
-        self._state = self._apply_local_sandwich(
-            self.state, step.matrix, step.target_indices
-        )
-
-    def apply_channel(self, step: ApplyChannelStep, rng: np.random.Generator) -> None:
-        """Apply the exact Kraus sum ``rho' = sum_i K_i rho K_i^dagger``.
-
-        Each term reuses the two-sided local-apply primitive gates use; the
-        branch weights are implicit in the ``K_i rho K_i^dagger`` sandwiches,
-        which is what makes this exact. No randomness is consumed (``rng`` is
-        accepted only for interface parity, like reset).
-        """
-        self._state = _apply_kraus_sum(
-            self.state, step.kraus_ops, step.target_indices, self._apply_local_sandwich
-        )
-
-    def _apply_local_sandwich(
-        self, rho: np.ndarray, matrix: np.ndarray, targets: Sequence[int]
-    ) -> np.ndarray:
-        """Return ``M_T rho M_T^dagger`` for a local matrix on flat ``targets``.
-
-        ``rho`` is viewed as a 2n-axis ket/bra tensor and ``M`` (resp.
-        ``conj(M)``) is contracted into the target ket (resp. bra) axes. The
-        matrix need not be unitary: gates and Kraus operators share this
-        primitive, differing only in whether the caller sums over terms.
-        """
-        return _apply_density_matrix(
-            rho, matrix, targets, self._dims, self._reversed_dims
+    def _bind_kernels_to_python_workflow(
+        self,
+        plan: tuple[ResolvedStep, ...],
+        measurements: tuple[tuple[int, int], ...] = (),
+        *,
+        policy: ExecutionPolicy | None = None,
+    ) -> _PythonExecution:
+        return _PythonExecution(
+            plan=plan,
+            deferred_measurements=measurements,
+            apply_matrix=_apply_matrix_density_matrix,
+            apply_channel=_apply_channel_density_matrix,
+            measurement=_MeasurementKernels(
+                _density_matrix_probabilities,
+                _project_density_matrix,
+                _sample_basis_indices,
+            ),
+            reset=_reset_density_matrix,
         )
 
 
@@ -361,8 +312,6 @@ class _NumpyOperatorEngine(_NumpyMatrixEngine):
     ``MatrixEngine`` runs their deterministic Python operator workflow;
     the concrete engines supply operator allocation and numerical operations.
     """
-
-    _measurement_kernels = None
 
 
 class NumpyUnitaryEngine(_NumpyOperatorEngine, NumpySVEngine):
@@ -389,14 +338,23 @@ class NumpyUnitaryEngine(_NumpyOperatorEngine, NumpySVEngine):
     def __init__(self, name: str = "numpy-unitary"):
         super().__init__(name)
 
-    _reset_kernel = None
     _allocate = staticmethod(_allocate_unitary)
 
-    def _apply_local(
-        self, state: np.ndarray, matrix: np.ndarray, targets: Sequence[int]
-    ) -> np.ndarray:
-        """Apply a local matrix to every column of the operator at once."""
-        return _apply_unitary(state, matrix, targets, self._dims, self._reversed_dims)
+    def _bind_kernels_to_python_workflow(
+        self,
+        plan: tuple[ResolvedStep, ...],
+        measurements: tuple[tuple[int, int], ...] = (),
+        *,
+        policy: ExecutionPolicy | None = None,
+    ) -> _PythonExecution:
+        return _PythonExecution(
+            plan=plan,
+            deferred_measurements=measurements,
+            apply_matrix=_apply_matrix_unitary,
+            apply_channel=None,
+            measurement=None,
+            reset=None,
+        )
 
 
 class NumpySuperopEngine(_NumpyOperatorEngine, NumpyDMEngine):
@@ -423,12 +381,24 @@ class NumpySuperopEngine(_NumpyOperatorEngine, NumpyDMEngine):
     def __init__(self, name: str = "numpy-superop"):
         super().__init__(name)
         self._reset_channels = _ResetChannelCache()
-        # Bind numerical resources, never the engine or its evolving state.
-        self._reset_kernel = partial(
-            _reset_superoperator, reset_channels=self._reset_channels
-        )
 
     _allocate = staticmethod(_allocate_superoperator)
+
+    def _bind_kernels_to_python_workflow(
+        self,
+        plan: tuple[ResolvedStep, ...],
+        measurements: tuple[tuple[int, int], ...] = (),
+        *,
+        policy: ExecutionPolicy | None = None,
+    ) -> _PythonExecution:
+        return _PythonExecution(
+            plan=plan,
+            deferred_measurements=measurements,
+            apply_matrix=_apply_matrix_superoperator,
+            apply_channel=_apply_channel_superoperator,
+            measurement=None,
+            reset=partial(_reset_superoperator, reset_channels=self._reset_channels),
+        )
 
     def export_state(self) -> np.ndarray:
         """Convert NumPy super-operator data to public column stacking.
@@ -441,11 +411,3 @@ class NumpySuperopEngine(_NumpyOperatorEngine, NumpyDMEngine):
         exported = np.empty_like(data, order="C")
         exported.reshape((size,) * 4)[...] = internal.transpose(1, 0, 3, 2)
         return exported
-
-    def _apply_local_sandwich(
-        self, rho: np.ndarray, matrix: np.ndarray, targets: Sequence[int]
-    ) -> np.ndarray:
-        """Return ``M_T . M_T^dagger`` applied to every column at once."""
-        return _apply_superoperator(
-            rho, matrix, targets, self._dims, self._reversed_dims
-        )

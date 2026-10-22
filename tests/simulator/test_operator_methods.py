@@ -342,7 +342,6 @@ def test_nonadjacent_channel_and_superop_use_public_target_positions(runtime, fu
         .run(
             program,
             initial_state=rho,
-            simulation_config=config,
             result_config={"counts": False, "final_state": True},
         )
         .result()

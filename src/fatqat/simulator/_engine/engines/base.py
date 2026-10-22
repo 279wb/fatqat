@@ -27,14 +27,11 @@ from ...._backends.steps import (
 from ....result import reduce_to_counts
 from .._execution_policy import (
     _ExecutionPolicy as ExecutionPolicy,
-    _materialization_policy,
 )
 from ..parallel import _run_shots_in_processes
 from ..state import EvolutionState, QuantumDataT
 from ..workflows.python import (
-    _MeasurementKernels,
-    _ResetKernel,
-    _PreparedPythonExecution,
+    _PythonExecution,
     _run_operator_plan,
     _run_single_pass,
     _run_one_shot,
@@ -49,8 +46,6 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
     """
 
     # Concrete engines declare all support; numeric/execution helpers may be shared.
-    _measurement_kernels: _MeasurementKernels[QuantumDataT] | None
-    _reset_kernel: _ResetKernel[QuantumDataT] | None
     _capabilities: _EngineCapabilities
 
     def __init__(self, name: str):
@@ -159,7 +154,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
 
         The payload is opaque at the dispatch boundary: overrides may return
         their own records paired with their local and shot-batch entries. This
-        default returns ``_PreparedPythonExecution`` for the Python workflows.
+        default returns ``_PythonExecution`` for the Python workflows.
 
         Overrides establish readiness for runtime-specific preparation before
         execution consumes it, retaining resources throughout pending work.
@@ -177,7 +172,21 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
             if policy.execution_path == "single_pass"
             else ()
         )
-        return _PreparedPythonExecution(plan, measurements)
+        return self._bind_kernels_to_python_workflow(plan, measurements, policy=policy)
+
+    @abstractmethod
+    def _bind_kernels_to_python_workflow(
+        self,
+        plan: tuple[ResolvedStep, ...],
+        measurements: tuple[tuple[int, int], ...] = (),
+        *,
+        policy: ExecutionPolicy | None = None,
+    ) -> _PythonExecution:
+        """Bind numerical functions and execution-specific layouts to the Python plan.
+
+        The optional policy supports direct single-operation callers; normal
+        execution always supplies its selected scheduling policy.
+        """
 
     def _execution_scope(self, policy: ExecutionPolicy) -> AbstractContextManager[None]:
         """Set up the runtime context for local or shot-batch execution.
@@ -245,21 +254,25 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         initial_state: InitialEvolutionState[QuantumDataT],
     ) -> RawResult[QuantumDataT]:
         """Materialize and dispatch an engine-selected execution policy."""
-        payload = self.materialize_execution(
-            plan,
-            system_dims=context.system_dims,
-            n_clbits=context.n_clbits,
-            policy=_materialization_policy(policy),
-        )
         if policy.shot_strategy in ("none", "serial", "threads"):
-            return self.execute_local(
+            payload = self.materialize_execution(
+                plan,
+                system_dims=context.system_dims,
+                n_clbits=context.n_clbits,
+                policy=policy,
+            )
+            return self.execute_in_process(
                 context, payload, policy, initial_state=initial_state
             )
 
         if policy.shot_strategy != "processes":
             raise RuntimeError(f"Unknown shot strategy: {policy.shot_strategy!r}")
+        # Workers own numerical bindings. Release resources from any previous local run
+        # without building a second, unused set of numerical bindings here.
+        self.configure_system(context.system_dims, context.n_clbits)
+        self._retain_step_caches(())
         snapshots = _run_shots_in_processes(
-            self._process_engine_factory(), context, payload, policy, initial_state
+            self._process_engine_factory(), context, plan, policy, initial_state
         )
         rows = np.asarray(snapshots, dtype=int).reshape(
             (len(snapshots), context.n_clbits)
@@ -277,7 +290,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         """
         return partial(type(self), name=self.name)
 
-    def execute_local(
+    def execute_in_process(
         self,
         context: ExecutionContext,
         payload: Any,
@@ -293,7 +306,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
             rows = None
             if policy.execution_path == "per_shot":
                 rows = self._run_per_shot(
-                    payload.plan,
+                    payload,
                     context,
                     initial_state,
                     state_requested=state_requested,
@@ -309,10 +322,8 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
                     assert policy.shot_strategy == "none"
                     assert self._evolution_state is not None
                     _run_operator_plan(
-                        self,
-                        payload.plan,
+                        payload,
                         self._evolution_state,
-                        self._reset_kernel,
                         context.system_dims,
                         rng,
                     )
@@ -320,12 +331,8 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
                     assert policy.execution_path == "single_pass"
                     assert self._evolution_state is not None
                     rows = _run_single_pass(
-                        self,
-                        payload.plan,
-                        payload.deferred_measurements,
+                        payload,
                         self._evolution_state,
-                        self._measurement_kernels,
-                        self._reset_kernel,
                         context,
                         rng,
                         state_requested=state_requested,
@@ -352,13 +359,11 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         assert policy.kernel_strategy == "serial"
         self.configure_system(context.system_dims, context.n_clbits)
         with self._execution_scope(policy):
-            return self._run_shot_batch(
-                payload.plan, context, seed_batch, initial_state
-            )
+            return self._run_shot_batch(payload, context, seed_batch, initial_state)
 
     def _run_per_shot(
         self,
-        plan: Sequence[ResolvedStep],
+        payload: _PythonExecution,
         context: ExecutionContext,
         initial_state: InitialEvolutionState[QuantumDataT],
         *,
@@ -367,7 +372,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         """Assign local trajectory streams and return requested classical samples."""
         n_iters = context.shots if context.request.counts else int(state_requested)
         snapshots = self._run_shot_batch(
-            plan,
+            payload,
             context,
             np.random.SeedSequence(context.seed).spawn(n_iters),
             initial_state,
@@ -380,7 +385,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
 
     def _run_shot_batch(
         self,
-        plan: Sequence[ResolvedStep],
+        payload: _PythonExecution,
         context: ExecutionContext,
         seed_sequences: Sequence[np.random.SeedSequence],
         initial_state: InitialEvolutionState[QuantumDataT],
@@ -400,29 +405,23 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
             assert self._evolution_state is not None
             snapshots.append(
                 _run_one_shot(
-                    self,
-                    plan,
+                    payload,
                     self._evolution_state,
-                    self._measurement_kernels,
-                    self._reset_kernel,
                     context,
                     np.random.default_rng(seed_sequence),
                 )
             )
         return snapshots
 
-    @abstractmethod
     def apply(self, step: ApplyMatrixStep) -> None:
-        """Apply a single matrix step to the internal state in place."""
+        """Apply one gate directly; normal execution binds functions once per plan."""
+        execution = self._bind_kernels_to_python_workflow((step,))
+        self._state = execution.apply_matrix(self.state, step, self._dims)
 
-    @abstractmethod
     def apply_channel(self, step: ApplyChannelStep, rng: np.random.Generator) -> None:
-        """Apply a Kraus channel to the internal state in place.
-
-        Consumes ``rng`` only under statevector semantics (one draw to sample
-        the trajectory branch); the density-matrix kernel is deterministic
-        and accepts it for interface parity, like reset.
-        """
+        """Apply one channel directly using the representation's numerical function."""
+        execution = self._bind_kernels_to_python_workflow((step,))
+        self._state = execution.apply_channel(self.state, step, self._dims, rng)
 
     def _expectation_values(
         self,

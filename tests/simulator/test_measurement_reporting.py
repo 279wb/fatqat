@@ -50,7 +50,7 @@ def test_reported_digit_mapping_precedes_confusion_and_feedforward():
         n_clbits=context.n_clbits,
         policy=policy,
     )
-    result = engine.execute_local(
+    result = engine.execute_in_process(
         context, payload, policy, initial_state=_InitialEvolutionState()
     )
 

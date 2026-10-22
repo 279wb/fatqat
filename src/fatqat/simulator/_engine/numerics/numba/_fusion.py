@@ -1,7 +1,31 @@
 """Numerical gate/channel and operator fusion for Numba engines.
 
-Execution policy selects whether to run these rewrites before workflow packing.
-The helpers preserve operation order and existing fusion cost limits.
+Two distinct passes are enabled by ``fusion=True``:
+
+* ``_fuse_gate_channels`` rewrites resolved steps: an unconditional gate and
+  immediately following unconditional channel on identical targets become one
+  channel. There is no whole-system size threshold for this pass.
+* ``_fuse_operator_payloads`` combines adjacent numerical operators, including
+  gates. Operator engines invoke it only above ``_MIN_SIZE_TO_FUSE``; its cost
+  and width limits then decide which neighbors to merge. CSR payloads are
+  barriers. This pass preserves order and does not commute operations.
+
+Usage by execution route (when fusion is enabled):
+
+    Runtime / representation     Workflow              Fusion passes
+    NumPy / all                  Python                Neither
+    Numba / statevector          Python or compiled SV Neither
+    Numba / density matrix       Python                Neither
+    Numba / unitary              Compiled operator     Operator payloads only
+    Numba / superoperator        Compiled operator     Both, in that order
+
+State-evolution fusion (SV and DM) is deferred to a future implementation.
+Process-based shots therefore perform no fusion in either parent or workers.
+
+For compiled superoperator execution, gate/channel fusion precedes construction
+of numerical payloads, then operator fusion precedes packing. Compiled unitary
+execution uses only the latter pass. Neither pass runs inside the execution loop
+or per shot. Compiled SV trajectories do not currently use either pass.
 """
 
 from __future__ import annotations

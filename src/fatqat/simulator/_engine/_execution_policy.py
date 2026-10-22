@@ -246,29 +246,25 @@ def _resolve_python_workflow_scheduling(
     )
 
 
-# Parent preparation and process-worker policies
-
-
-def _materialization_policy(parent: _ExecutionPolicy) -> _ExecutionPolicy:
-    """Project process-shot preparation into local parent execution controls."""
-    if parent.shot_strategy != "processes":
-        return parent
-    return replace(
-        parent,
-        shot_strategy="serial",
-        kernel_strategy="serial",
-        worker_limit=1,
-    )
+# Process-worker policy
 
 
 def _process_child_policy(parent: _ExecutionPolicy) -> _ExecutionPolicy:
-    """Revoke dispatch and preparation authority in a process child."""
+    """Restrict a process worker to serial shots and kernels.
+
+    ``parallel._run_shots_in_processes`` derives this policy once and passes it
+    to every worker batch. Each worker uses it to build numerical bindings and
+    execute its assigned shots through the Python workflow, with either NumPy
+    or Numba kernels. Compiled Numba trajectories and operator workflows do not
+    use this process route.
+
+    Fusion is unsupported on these state-evolution routes. Compiled operator
+    fusion is independent of this policy.
+    """
     assert parent.shot_strategy == "processes"
     return replace(
         parent,
         shot_strategy="serial",
         kernel_strategy="serial",
         worker_limit=1,
-        # The parent already materialized any requested fusion into the payload.
-        fusion=False,
     )

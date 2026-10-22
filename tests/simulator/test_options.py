@@ -13,11 +13,6 @@ from fatqat.simulator._execution_contract import (
     _TrajectoryCapabilities,
     _InitialEvolutionState,
 )
-from fatqat.simulator._engine._execution_policy import (
-    _ExecutionPolicy,
-    _materialization_policy,
-    _process_child_policy,
-)
 from fatqat.errors import BackendValidationError
 from fatqat.simulator import Simulator
 
@@ -384,39 +379,6 @@ def test_run_rejects_threading_without_worker_capacity(
         backend.run(
             dynamic_program, shots=64, simulation_config={axis: "threads"}
         ).result()
-
-
-def test_process_policy_projections():
-    local = _ExecutionPolicy(
-        execution_path="per_shot",
-        shot_strategy="serial",
-        kernel_strategy="adaptive",
-        worker_limit=None,
-        fusion=False,
-    )
-    process = _ExecutionPolicy(
-        execution_path="per_shot",
-        shot_strategy="processes",
-        kernel_strategy="serial",
-        worker_limit=4,
-        fusion=True,
-    )
-
-    assert _materialization_policy(local) == local
-    assert _materialization_policy(process) == _ExecutionPolicy(
-        execution_path="per_shot",
-        shot_strategy="serial",
-        kernel_strategy="serial",
-        worker_limit=1,
-        fusion=True,
-    )
-    assert _process_child_policy(process) == _ExecutionPolicy(
-        execution_path="per_shot",
-        shot_strategy="serial",
-        kernel_strategy="serial",
-        worker_limit=1,
-        fusion=False,
-    )
 
 
 def test_run_rejects_non_dict_simulation_config():

@@ -5,8 +5,7 @@ shared materialization and Python execution from ``MatrixEngine`` and
 initialization from their NumPy twins,
 while replacing numeric kernels with Numba-jitted loops. `NumbaUnitaryEngine`
 and `NumbaSuperopEngine` then reuse *those* kernels for the operator
-representations, overriding only the apply plan (see the operator-engine
-section at the bottom). All four are reachable via
+representations, with separate preparation for their compiled workflows. All four are reachable via
 ``Simulator(method=..., runtime="numba")``.
 
 Kernel selection is key-driven: an `ApplyMatrixStep` carries the canonical
@@ -17,12 +16,12 @@ or per shot. `_KERNEL_SPECS` is the statevector key-to-structure table; the
 density matrix derives its table from the same declarations because the
 Kronecker product preserves structure (see below).
 
-- `NumbaSVEngine` replaces gate application (`apply` / `_apply_local`)
-  and selects Numba measurement and reset functions.
+- `NumbaSVEngine` selects Numba gate, measurement, and reset functions
+  and retains the channel matrix fallback (`_apply_local`).
   Reset uses direct digit shifts shared with the compiled trajectory path.
-- `NumbaDMEngine` replaces `apply` / `apply_channel` and selects Numba
-  measurement functions. It reuses the *same* coset-walk kernels as
-  the statevector path by viewing ``rho`` (shape ``(size, size)``) as a flat
+- `NumbaDMEngine` selects Numba gate and measurement functions; channels
+  share the gate superoperator application. It reuses the *same* coset-walk
+  kernels as the statevector path by viewing ``rho`` (shape ``(size, size)``) as a flat
   vector over a doubled ``2n``-subsystem system: ``n`` bra subsystems (strides
   ``prod(dims[:q])``) then ``n`` ket subsystems (strides ``size *
   prod(dims[:q])``). The sandwich ``M rho M^dagger`` is the single
@@ -87,6 +86,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from math import prod
+from functools import partial
 from typing import NamedTuple
 
 import numpy as np
@@ -104,12 +104,9 @@ from ..._execution_contract import (
 from ...._backends.steps import (
     ApplyChannelStep,
     ApplyMatrixStep,
-    LossStep,
-    PutStep,
     ResetStep,
     ResolvedStep,
 )
-from ....noise.nb import _jump_branch_kernel
 from ....result import reduce_to_counts
 from ....errors import BackendValidationError
 from .._execution_policy import (
@@ -122,10 +119,6 @@ from .._execution_policy import (
     _adaptive_thread_worker_ceiling,
 )
 from .._numba_scope import _kernel_thread_workers, _thread_scope
-from ..numerics.numba._apply import (
-    _classify_matrix,
-    _apply_matrix,
-)
 from ..numerics.numba._fusion import (
     _MIN_SIZE_TO_FUSE,
     _fuse_gate_channels,
@@ -143,9 +136,16 @@ from ..numerics.numba._preparation import (
     _MatrixStructureCache,
     _SuperoperatorCache,
     _MAX_THREADS,
-    _MIN_SIZE_TO_THREAD_DM,
-    _compute_apply_plan,
 )
+from ..numerics.numba._apply_matrix_to_state import (
+    _apply_matrix_statevector,
+    _apply_channel_statevector,
+    _apply_channel_density_matrix,
+    _apply_superoperator_to_state,
+    _build_statevector_plan,
+    _build_density_matrix_plan,
+)
+from ..numerics.numpy._state import _reset_density_matrix, _reset_superoperator
 from .numpy import (
     _NumpyOperatorEngine,
     NumpyDMEngine,
@@ -153,7 +153,7 @@ from .numpy import (
     NumpySVEngine,
     NumpyUnitaryEngine,
 )
-from ..workflows.python import _MeasurementKernels, _PreparedPythonExecution
+from ..workflows.python import _MeasurementKernels, _PythonExecution
 from ..workflows.numba.operators import (
     _operator_chunks,
     _pack_operator_plan,
@@ -161,19 +161,11 @@ from ..workflows.numba.operators import (
     _run_operator_plan_serial,
 )
 from ..workflows.numba.trajectories import (
-    _PreparedSVTrajectories,
+    _NumbaTrajectoryExecution,
     _compile_dynamic_plan,
     _execute_sv_trajectories,
     _plan_compilable,
 )
-
-
-class _PreparedSVExecution(NamedTuple):
-    """Python plan, optional compiled trajectories, and reusable SV layouts."""
-
-    python_execution: _PreparedPythonExecution
-    compiled_trajectories: _PreparedSVTrajectories | None
-    apply_plans: tuple[tuple[tuple[int, ...], tuple], ...]
 
 
 class NumbaSVEngine(NumpySVEngine):
@@ -277,31 +269,69 @@ class NumbaSVEngine(NumpySVEngine):
             workflow="numba_trajectories",
         )
 
-    _measurement_kernels = _MeasurementKernels(
-        _sv_probabilities_kernel, _project_statevector, _sample_basis_indices
-    )
-
-    _reset_kernel = staticmethod(_reset_statevector)
-
     def __init__(self, name: str = "numba-sv"):
         super().__init__(name)
-        # Per-gate layout (offsets/strides/chunk count) keyed by target tuple.
-        # The layout depends only on targets and the fixed system dims, so it is
-        # reused across gates and shots; `initialize` clears it when dims change.
-        self._apply_plans: dict[tuple[int, ...], tuple] = {}
         self._matrix_structures = _MatrixStructureCache()
-        # Bind once: all consumers resolve through the numerical owner directly.
-        self._resolve_structure = self._matrix_structures.resolve
+
+    def _bind_kernels_to_python_workflow(
+        self,
+        plan: tuple[ResolvedStep, ...],
+        measurements: tuple[tuple[int, int], ...] = (),
+        *,
+        policy: ExecutionPolicy | None = None,
+    ) -> _PythonExecution:
+        # Layouts belong to this execution, not the engine. Initializing another
+        # trajectory or preparing another plan cannot replace these resources.
+        operator = self._state_field == "unitary"
+        targets = {
+            tuple(step.target_indices)
+            for step in plan
+            if isinstance(step, (ApplyMatrixStep, ApplyChannelStep))
+        }
+        workers = _kernel_thread_workers(policy) if policy else _MAX_THREADS
+        plans = {
+            target: _build_statevector_plan(
+                self._dims,
+                target,
+                operator=operator,
+                max_workers=workers,
+                force_parallel=policy is not None
+                and policy.kernel_strategy == "threads",
+            )
+            for target in targets
+        }
+        # TODO Those None if operator indicate that the operator path does not support
+        # measurements or resets. Should be implemented in the operator engines.
+        return _PythonExecution(
+            plan=plan,
+            deferred_measurements=measurements,
+            apply_matrix=partial(
+                _apply_matrix_statevector,
+                structures=self._matrix_structures,
+                plans=plans,
+            ),
+            apply_channel=(
+                None
+                if operator
+                else partial(
+                    _apply_channel_statevector, routes=self._channel_routes, plans=plans
+                )
+            ),
+            measurement=(
+                None
+                if operator
+                else _MeasurementKernels(
+                    _sv_probabilities_kernel,
+                    _project_statevector,
+                    _sample_basis_indices,
+                )
+            ),
+            reset=None if operator else _reset_statevector,
+        )
 
     def _retain_step_caches(self, plan: tuple[ResolvedStep, ...]) -> None:
         super()._retain_step_caches(plan)
         self._matrix_structures.retain(plan)
-
-    def configure_system(self, system_dims: Sequence[int], n_clbits: int = 0) -> None:
-        dims_changed = tuple(int(dim) for dim in system_dims) != self._dims
-        super().configure_system(system_dims, n_clbits)
-        if dims_changed:
-            self._apply_plans = {}
 
     def _execution_scope(self, policy: ExecutionPolicy):
         return _thread_scope(policy)
@@ -313,155 +343,39 @@ class NumbaSVEngine(NumpySVEngine):
         system_dims: tuple[int, ...],
         n_clbits: int,
         policy: ExecutionPolicy,
-    ) -> _PreparedSVExecution:
-        python_execution = super().materialize_execution(
-            plan,
-            system_dims=system_dims,
-            n_clbits=n_clbits,
-            policy=policy,
-        )
-        execution_plan = python_execution.plan
-        targets = {
-            tuple(step.target_indices)
-            for step in execution_plan
-            if isinstance(step, (ApplyMatrixStep, ApplyChannelStep))
-        }
-        targets.update(
-            (index,)
-            for step in execution_plan
-            if isinstance(step, ResetStep)
-            for index in step.reset_indices
-        )
-        targets.update(
-            (index,)
-            for step in execution_plan
-            if isinstance(step, (LossStep, PutStep))
-            for index in step.target_indices
-        )
-        workers = _kernel_thread_workers(policy)
-        self._apply_plans = {
-            target: self._build_apply_plan(
-                target,
-                max_workers=workers,
-                force_parallel=policy.kernel_strategy == "threads",
+    ) -> _PythonExecution | _NumbaTrajectoryExecution:
+        if policy.workflow == "python":
+            return super().materialize_execution(
+                plan, system_dims=system_dims, n_clbits=n_clbits, policy=policy
             )
-            for target in targets
-        }
-        compiled = None
-        if policy.workflow == "numba_trajectories":
-            compiled = _compile_dynamic_plan(
-                list(execution_plan),
-                self._dims,
-                self._build_apply_plan,
-                self._resolve_structure,
-            )
-        # TODO: python_execution is redundant with compiled
-        return _PreparedSVExecution(
-            python_execution, compiled, tuple(self._apply_plans.items())
+        self.configure_system(system_dims, n_clbits)
+        self._retain_step_caches(plan)
+        return _compile_dynamic_plan(
+            list(plan),
+            self._dims,
+            self._build_apply_plan,
+            self._matrix_structures.resolve,
         )
 
-    def execute_local(
+    def execute_in_process(
         self,
         context: ExecutionContext,
-        payload: _PreparedSVExecution,
+        payload: _PythonExecution | _NumbaTrajectoryExecution,
         policy: ExecutionPolicy,
         *,
         initial_state: InitialEvolutionState[np.ndarray],
     ) -> RawResult[np.ndarray]:
-        self.configure_system(context.system_dims, context.n_clbits)
-        self._apply_plans = dict(payload.apply_plans)
         if policy.workflow == "python":
-            return super().execute_local(
-                context, payload.python_execution, policy, initial_state=initial_state
+            return super().execute_in_process(
+                context, payload, policy, initial_state=initial_state
             )
-        assert policy.workflow == "numba_trajectories"
-        assert payload.compiled_trajectories is not None
+        self.configure_system(context.system_dims, context.n_clbits)
         with self._execution_scope(policy):
             rows = _execute_sv_trajectories(
-                context, payload.compiled_trajectories, initial_state=initial_state
+                context, payload, initial_state=initial_state
             )
             outcome_keys, outcome_counts = reduce_to_counts(rows)
-            return RawResult(
-                outcome_keys=outcome_keys,
-                outcome_counts=outcome_counts,
-            )
-
-    def execute_shot_batch(
-        self,
-        context: ExecutionContext,
-        payload: _PreparedSVExecution,
-        seed_batch: list[np.random.SeedSequence],
-        policy: ExecutionPolicy,
-        *,
-        initial_state: InitialEvolutionState[np.ndarray],
-    ) -> list[tuple[int, ...]]:
-        self.configure_system(context.system_dims, context.n_clbits)
-        self._apply_plans = dict(payload.apply_plans)
-        return super().execute_shot_batch(
-            context,
-            payload.python_execution,
-            seed_batch,
-            policy,
-            initial_state=initial_state,
-        )
-
-    def apply(self, step: ApplyMatrixStep) -> None:
-        """Apply one plan step - the standard path (key-aware, cached)."""
-        code, columns, values = self._resolve_structure(step)
-        self._state = self._launch_resolved(
-            self.state, step.matrix, step.target_indices, code, columns, values
-        )
-
-    def _apply_kraus_jump(
-        self, step: ApplyChannelStep, rng: np.random.Generator
-    ) -> None:
-        """Sample one Kraus branch in Numba (quantum-jump unravelling).
-
-        Each branch ``K_i |psi>`` is built by the local-apply fallback path
-        from its own copy of the state (the kernels update their input buffer
-        in place, so the source must not be reused), and
-        `_jump_branch_kernel` does the channel-specific part: branch weights,
-        the pick, the renormalization. Consumes exactly one rng draw, like the
-        NumPy twin and like measurement and reset.
-        """
-        source = self.state
-        branches = np.empty((len(step.kraus_ops), source.shape[0]), dtype=np.complex128)
-        for i, kraus in enumerate(step.kraus_ops):
-            branches[i] = self._apply_local(source.copy(), kraus, step.target_indices)
-        self._state = _jump_branch_kernel(branches, float(rng.random()))
-
-    def _apply_local(
-        self, state: np.ndarray, matrix: np.ndarray, targets: Sequence[int]
-    ) -> np.ndarray:
-        """Apply a bare local matrix - the matrix-only fallback path.
-
-        For callers with no step to carry identity or cache against, such as
-        noise-channel Kraus branches. One `_classify_matrix` scan (the same
-        single rule the standard path uses), then the same resolved kernels.
-        """
-        matrix = np.ascontiguousarray(matrix, dtype=np.complex128)
-        d = matrix.shape[0]
-        columns = np.empty(d, dtype=np.int64)
-        values = np.empty(d, dtype=np.complex128)
-        code = int(_classify_matrix(matrix, columns, values))
-        return self._launch_resolved(state, matrix, targets, code, columns, values)
-
-    def _launch_resolved(
-        self,
-        state: np.ndarray,
-        matrix: np.ndarray,
-        targets: Sequence[int],
-        code: int,
-        columns: np.ndarray,
-        values: np.ndarray,
-    ) -> np.ndarray:
-        """Shared kernel launch for the standard and fallback paths."""
-        targets = tuple(targets)
-        plan = self._apply_plans.get(targets)
-        if plan is None:
-            plan = self._build_apply_plan(targets)
-            self._apply_plans[targets] = plan
-        return _apply_matrix(state, matrix, plan, code, columns, values)
+            return RawResult(outcome_keys=outcome_keys, outcome_counts=outcome_counts)
 
     def _build_apply_plan(
         self,
@@ -471,36 +385,25 @@ class NumbaSVEngine(NumpySVEngine):
         force_parallel: bool = False,
     ) -> tuple:
         """Strided-block kernel layout for ``targets`` over the physical dims."""
-        return _compute_apply_plan(
-            self._dims,
-            targets,
-            max_workers=max_workers,
-            force_parallel=force_parallel,
+        return _build_statevector_plan(
+            self._dims, targets, max_workers=max_workers, force_parallel=force_parallel
         )
 
 
 # --- density-matrix kernels ---
 
 
-class _PreparedDMExecution(NamedTuple):
-    """Effective Python plan and reusable layouts over the doubled DM space."""
-
-    python_execution: _PreparedPythonExecution
-    sandwich_plans: tuple[tuple[tuple[int, ...], tuple], ...]
-
-
 class NumbaDMEngine(NumpyDMEngine):
     """Density-matrix engine with Numba-jitted, key-driven numeric kernels.
 
-    Overrides the numeric kernels of `NumpyDMEngine` and materializes the
-    optional gate/channel rewrite once. Inherited measurement and execution
-    helpers call the Numba kernels within the resolved thread scope.
+    Binds Numba numerical functions to the shared Python workflow. Execution
+    runs within the selected thread scope; density-matrix fusion is unsupported.
     Reset keeps the NumPy partial-trace numerical function (see
     the module docstring).
 
     Both a gate and a channel apply as one super-operator pass over
-    ``vec(rho)`` (module docstring); `_resolve_superop` is the density-matrix
-    analog of the statevector `_resolve_structure` - built and classified once
+    ``vec(rho)`` (module docstring). The superoperator cache is the density-matrix
+    analog of the statevector matrix cache: built and classified once
     per plan step, key-aware for gates, content-scanned for channels.
     """
 
@@ -512,164 +415,74 @@ class NumbaDMEngine(NumpyDMEngine):
         kernels=_KernelCapabilities(
             supports_kernel_threads=True,
             thread_capacity=_MAX_THREADS,
-            supports_fusion=True,
+            supports_fusion=False,
         ),
         supports_process_shots=True,
     )
 
-    _measurement_kernels = _MeasurementKernels(
-        _dm_probabilities_kernel, _project_density_matrix, _sample_basis_indices
-    )
-
     def __init__(self, name: str = "numba-dm"):
         super().__init__(name)
-        # Per-target super-operator layout (offsets/strides/chunk count over the
-        # doubled bra+ket system), keyed by target tuple. Depends only on
-        # targets and the fixed dims; `initialize` clears it when dims change.
-        self._sandwich_plans: dict[tuple[int, ...], tuple] = {}
         self._superoperators = _SuperoperatorCache()
-        # Bind once: DM and accumulated superoperators share numerical resolution.
-        self._resolve_superop = self._superoperators.resolve
+
+    def _bind_kernels_to_python_workflow(
+        self,
+        plan: tuple[ResolvedStep, ...],
+        measurements: tuple[tuple[int, int], ...] = (),
+        *,
+        policy: ExecutionPolicy | None = None,
+    ) -> _PythonExecution:
+        operator = self._state_field == "superop"
+        targets = {
+            tuple(step.target_indices)
+            for step in plan
+            if isinstance(step, (ApplyMatrixStep, ApplyChannelStep))
+        }
+        workers = _kernel_thread_workers(policy) if policy else _MAX_THREADS
+        plans = {
+            target: _build_density_matrix_plan(
+                self._dims,
+                target,
+                operator=operator,
+                max_workers=workers,
+                force_parallel=policy is not None
+                and policy.kernel_strategy == "threads",
+            )
+            for target in targets
+        }
+        return _PythonExecution(
+            plan=plan,
+            deferred_measurements=measurements,
+            apply_matrix=partial(
+                _apply_superoperator_to_state,
+                superoperators=self._superoperators,
+                plans=plans,
+            ),
+            apply_channel=partial(
+                _apply_channel_density_matrix,
+                superoperators=self._superoperators,
+                plans=plans,
+            ),
+            measurement=(
+                None
+                if operator
+                else _MeasurementKernels(
+                    _dm_probabilities_kernel,
+                    _project_density_matrix,
+                    _sample_basis_indices,
+                )
+            ),
+            reset=(
+                partial(_reset_superoperator, reset_channels=self._reset_channels)
+                if operator
+                else _reset_density_matrix
+            ),
+        )
 
     def _retain_step_caches(self, plan: tuple[ResolvedStep, ...]) -> None:
         self._superoperators.retain(plan)
 
-    def configure_system(self, system_dims: Sequence[int], n_clbits: int = 0) -> None:
-        dims_changed = tuple(int(dim) for dim in system_dims) != self._dims
-        super().configure_system(system_dims, n_clbits)
-        if dims_changed:
-            self._sandwich_plans = {}
-
     def _execution_scope(self, policy: ExecutionPolicy):
         return _thread_scope(policy)
-
-    def materialize_execution(
-        self,
-        plan: tuple[ResolvedStep, ...],
-        *,
-        system_dims: tuple[int, ...],
-        n_clbits: int,
-        policy: ExecutionPolicy,
-    ) -> _PreparedDMExecution:
-        """Apply the optional gate/channel rewrite exactly once."""
-        execution_plan = (
-            tuple(_fuse_gate_channels(list(plan))) if policy.fusion else plan
-        )
-        python_execution = super().materialize_execution(
-            execution_plan,
-            system_dims=system_dims,
-            n_clbits=n_clbits,
-            policy=policy,
-        )
-        targets = {
-            tuple(step.target_indices)
-            for step in python_execution.plan
-            if isinstance(step, (ApplyMatrixStep, ApplyChannelStep))
-        }
-        workers = _kernel_thread_workers(policy)
-        self._sandwich_plans = {
-            target: self._build_sandwich_plan(
-                target,
-                max_workers=workers,
-                force_parallel=policy.kernel_strategy == "threads",
-            )
-            for target in targets
-        }
-        return _PreparedDMExecution(
-            python_execution, tuple(self._sandwich_plans.items())
-        )
-
-    def execute_local(
-        self,
-        context: ExecutionContext,
-        payload: _PreparedDMExecution,
-        policy: ExecutionPolicy,
-        *,
-        initial_state: InitialEvolutionState[np.ndarray],
-    ) -> RawResult[np.ndarray]:
-        self.configure_system(context.system_dims, context.n_clbits)
-        self._sandwich_plans = dict(payload.sandwich_plans)
-        return super().execute_local(
-            context, payload.python_execution, policy, initial_state=initial_state
-        )
-
-    def execute_shot_batch(
-        self,
-        context: ExecutionContext,
-        payload: _PreparedDMExecution,
-        seed_batch: list[np.random.SeedSequence],
-        policy: ExecutionPolicy,
-        *,
-        initial_state: InitialEvolutionState[np.ndarray],
-    ) -> list[tuple[int, ...]]:
-        self.configure_system(context.system_dims, context.n_clbits)
-        self._sandwich_plans = dict(payload.sandwich_plans)
-        return super().execute_shot_batch(
-            context,
-            payload.python_execution,
-            seed_batch,
-            policy,
-            initial_state=initial_state,
-        )
-
-    def _sandwich_plan(self, targets: tuple[int, ...]) -> tuple:
-        """Super-operator apply plan for ``targets`` over the doubled dims.
-
-        The super-target combines each gate target's ket subsystem (doubled
-        index ``n + t``, stride ``size * prod(dims[:t])``) and bra subsystem
-        (doubled index ``t``, stride ``prod(dims[:t])``), ket group first so
-        the local index is ``ket * D + bra`` - matching ``kron(M, conj(M))``.
-        """
-        plan = self._sandwich_plans.get(targets)
-        if plan is None:
-            plan = self._build_sandwich_plan(targets)
-            self._sandwich_plans[targets] = plan
-        return plan
-
-    def _build_sandwich_plan(
-        self,
-        targets: tuple[int, ...],
-        *,
-        max_workers: int = _MAX_THREADS,
-        force_parallel: bool = False,
-    ) -> tuple:
-        n = len(self._dims)
-        doubled_dims = self._dims + self._dims
-        super_targets = [n + t for t in targets] + list(targets)
-        return _compute_apply_plan(
-            doubled_dims,
-            super_targets,
-            _MIN_SIZE_TO_THREAD_DM,
-            max_workers=max_workers,
-            force_parallel=force_parallel,
-        )
-
-    def _apply_superop(self, step: ApplyMatrixStep | ApplyChannelStep) -> None:
-        """One resolved super-operator pass over ``vec(rho)``, in place.
-
-        ``self.state`` is contiguous ``complex128`` by construction, so the
-        flat view aliases it and no per-step copy of the ``4^n`` matrix is
-        made. A dense-but-sparse super-operator (a resolved CSR) walks its
-        nonzeros; everything else takes the structure-specialized dense /
-        diagonal / permutation pass.
-        """
-        superop, code, columns, values, sparse = self._resolve_superop(step)
-        plan = self._sandwich_plan(tuple(step.target_indices))
-        self._state = _apply_matrix(
-            self.state, superop, plan, code, columns, values, sparse=sparse
-        )
-
-    def apply(self, step: ApplyMatrixStep) -> None:
-        """Apply one gate - key-aware super-operator pass (cached per step)."""
-        self._apply_superop(step)
-
-    def apply_channel(self, step: ApplyChannelStep, rng: np.random.Generator) -> None:
-        """Apply the exact Kraus sum as one super-operator pass.
-
-        Deterministic; no randomness is consumed (``rng`` is accepted for
-        interface parity, like reset).
-        """
-        self._apply_superop(step)
 
 
 # --- operator engines ---
@@ -680,7 +493,7 @@ class NumbaDMEngine(NumpyDMEngine):
 # never-targeted subsystem prepended to the dims.
 
 
-class _PreparedOperatorExecution(NamedTuple):
+class _NumbaOperatorExecution(NamedTuple):
     """Host-side operator preparation; only the packed arrays enter Numba.
     and exports the requested operator.
     """
@@ -733,9 +546,6 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
             workflow="numba_operator",
         )
 
-    # Operator representations must not inherit state-measurement functions.
-    _measurement_kernels = None
-
     def materialize_execution(
         self,
         plan: tuple[ResolvedStep, ...],
@@ -743,7 +553,7 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
         system_dims: tuple[int, ...],
         n_clbits: int,
         policy: ExecutionPolicy,
-    ) -> _PreparedOperatorExecution:
+    ) -> _NumbaOperatorExecution:
         """Resolve, optionally fuse, and pack the operator plan once."""
         assert policy.workflow == "numba_operator"
         self.configure_system(system_dims, n_clbits)
@@ -756,10 +566,10 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
         if policy.fusion and flat_size >= _MIN_SIZE_TO_FUSE:
             payloads = _fuse_operator_payloads(payloads, row_dims)
         if not payloads:
-            return _PreparedOperatorExecution(None, 0, n_columns, 1)
+            return _NumbaOperatorExecution(None, 0, n_columns, 1)
         packed, scratch_rows = _pack_operator_plan(payloads, row_dims, n_columns)
         n_chunks = _operator_chunks(len(payloads), flat_size, n_columns, policy)
-        return _PreparedOperatorExecution(packed, scratch_rows, n_columns, n_chunks)
+        return _NumbaOperatorExecution(packed, scratch_rows, n_columns, n_chunks)
 
     def _operator_execution_plan(
         self, plan: tuple[ResolvedStep, ...], policy: ExecutionPolicy
@@ -767,10 +577,10 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
         del policy
         return plan
 
-    def execute_local(
+    def execute_in_process(
         self,
         context: ExecutionContext,
-        payload: _PreparedOperatorExecution,
+        payload: _NumbaOperatorExecution,
         policy: ExecutionPolicy,
         *,
         initial_state: InitialEvolutionState[np.ndarray],
@@ -843,9 +653,6 @@ class NumbaUnitaryEngine(  # pylint: disable=too-many-ancestors
         supports_process_shots=False,
     )
 
-    # Do not inherit the statevector reset operation through the kernel mixin.
-    _reset_kernel = None
-
     def __init__(self, name: str = "numba-unitary"):
         super().__init__(name)
 
@@ -859,28 +666,11 @@ class NumbaUnitaryEngine(  # pylint: disable=too-many-ancestors
             assert isinstance(
                 step, ApplyMatrixStep
             ), "unitary execution accepts only matrix steps"
-            code, columns, values = self._resolve_structure(step)
+            code, columns, values = self._matrix_structures.resolve(step)
             payloads.append(
                 (step.matrix, code, columns, values, None, tuple(step.target_indices))
             )
         return payloads
-
-    def _build_apply_plan(
-        self,
-        targets: tuple[int, ...],
-        *,
-        max_workers: int = _MAX_THREADS,
-        force_parallel: bool = False,
-    ) -> tuple:
-        """Kernel layout for ``targets`` over the column-batched dims."""
-        size = prod(self._dims) if self._dims else 1
-        extended = (size,) + self._dims
-        return _compute_apply_plan(
-            extended,
-            tuple(1 + t for t in targets),
-            max_workers=max_workers,
-            force_parallel=force_parallel,
-        )
 
 
 # Deep base list by design: the leaf adds only its plan builder and payloads.
@@ -937,7 +727,9 @@ class NumbaSuperopEngine(  # pylint: disable=too-many-ancestors
                 else [step]
             )
             for resolved in resolved_steps:
-                superop, code, columns, values, sparse = self._resolve_superop(resolved)
+                superop, code, columns, values, sparse = self._superoperators.resolve(
+                    resolved
+                )
                 targets = tuple(resolved.target_indices)
                 # Ket group first, so the local index is ``ket * D + bra``.
                 row_targets = tuple(n + t for t in targets) + targets
@@ -950,15 +742,3 @@ class NumbaSuperopEngine(  # pylint: disable=too-many-ancestors
         if not policy.fusion:
             return plan
         return tuple(_fuse_gate_channels(list(plan)))
-
-    def _sandwich_plan(self, targets: tuple[int, ...]) -> tuple:
-        """Super-operator layout for ``targets`` over the column-batched doubled dims."""
-        plan = self._sandwich_plans.get(targets)
-        if plan is None:
-            n = len(self._dims)
-            size = prod(self._dims) if self._dims else 1
-            extended = (size * size,) + self._dims + self._dims
-            super_targets = [1 + n + t for t in targets] + [1 + t for t in targets]
-            plan = _compute_apply_plan(extended, super_targets, _MIN_SIZE_TO_THREAD_DM)
-            self._sandwich_plans[targets] = plan
-        return plan
