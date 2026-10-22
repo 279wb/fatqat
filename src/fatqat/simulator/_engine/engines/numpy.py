@@ -61,6 +61,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections.abc import Sequence
 from math import prod
+from functools import partial
 
 import numpy as np
 
@@ -108,9 +109,10 @@ from ..numerics.numpy._state import (
     _apply_unitary,
     _reset_density_matrix,
     _reset_statevector,
+    _reset_superoperator,
     _sample_unitary,
 )
-from ..workflows.python import _MeasurementKernels, _collapse
+from ..workflows.python import _MeasurementKernels
 from ..state import ClassicalState, EvolutionState
 
 # --- shared NumPy operations ---
@@ -241,6 +243,7 @@ class NumpySVEngine(_NumpyMatrixEngine):
         _statevector_probabilities, _project_statevector, _sample_basis_indices
     )
 
+    _reset_kernel = staticmethod(_reset_statevector)
     _allocate = staticmethod(_allocate_statevector)
 
     def apply(self, step: ApplyMatrixStep) -> None:
@@ -288,23 +291,6 @@ class NumpySVEngine(_NumpyMatrixEngine):
             state, matrix, targets, self._dims, self._reversed_dims
         )
 
-    def reset_subsystems(
-        self, indices: Sequence[int], rng: np.random.Generator
-    ) -> None:
-        """Measure ``indices`` as one branch, then shift each nonzero digit to ``|0>``.
-
-        Consumes exactly one rng draw; the rest of an entangled state is left
-        correctly conditioned on the sampled branch.
-        """
-        assert len(indices) >= 1, "reset_subsystems requires at least one index"
-        assert self._evolution_state is not None
-        idx = _collapse(
-            self._evolution_state, self._measurement_kernels, self._dims, indices, rng
-        )
-        self._state = _reset_statevector(
-            self._state, idx, indices, self._dims, self._apply_local
-        )
-
 
 # --- density-matrix engine ---
 
@@ -330,6 +316,7 @@ class NumpyDMEngine(_NumpyMatrixEngine):
         _density_matrix_probabilities, _project_density_matrix, _sample_basis_indices
     )
 
+    _reset_kernel = staticmethod(_reset_density_matrix)
     _allocate = staticmethod(_allocate_density_matrix)
 
     def apply(self, step: ApplyMatrixStep) -> None:
@@ -362,20 +349,6 @@ class NumpyDMEngine(_NumpyMatrixEngine):
         """
         return _apply_density_matrix(
             rho, matrix, targets, self._dims, self._reversed_dims
-        )
-
-    def reset_subsystems(
-        self, indices: Sequence[int], rng: np.random.Generator | None = None
-    ) -> None:
-        """Deterministically reset ``indices``: partial trace, then reprepare ``|0>``.
-
-        ``rho' = |0..0><0..0|_targets (x) Tr_targets(rho)``. Trace-preserving, so
-        no renormalization is needed and no randomness is consumed (``rng`` is
-        accepted only for interface parity).
-        """
-        assert len(indices) >= 1, "reset_subsystems requires at least one index"
-        self._state = _reset_density_matrix(
-            self.state, indices, self._dims, self._reversed_dims
         )
 
 
@@ -416,6 +389,7 @@ class NumpyUnitaryEngine(_NumpyOperatorEngine, NumpySVEngine):
     def __init__(self, name: str = "numpy-unitary"):
         super().__init__(name)
 
+    _reset_kernel = None
     _allocate = staticmethod(_allocate_unitary)
 
     def _apply_local(
@@ -449,6 +423,10 @@ class NumpySuperopEngine(_NumpyOperatorEngine, NumpyDMEngine):
     def __init__(self, name: str = "numpy-superop"):
         super().__init__(name)
         self._reset_channels = _ResetChannelCache()
+        # Bind numerical resources, never the engine or its evolving state.
+        self._reset_kernel = partial(
+            _reset_superoperator, reset_channels=self._reset_channels
+        )
 
     _allocate = staticmethod(_allocate_superoperator)
 
@@ -471,17 +449,3 @@ class NumpySuperopEngine(_NumpyOperatorEngine, NumpyDMEngine):
         return _apply_superoperator(
             rho, matrix, targets, self._dims, self._reversed_dims
         )
-
-    def reset_subsystems(
-        self, indices: Sequence[int], rng: np.random.Generator | None = None
-    ) -> None:
-        """Reset ``indices`` through the Kraus channel ``sum_k |0><k| . |k><0|``.
-
-        Equal to the density matrix's partial-trace reset. Deterministic -
-        ``rng`` is accepted only for interface parity.
-        """
-        assert len(indices) >= 1, "reset_subsystems requires at least one index"
-        for index in indices:
-            self.apply_channel(
-                self._reset_channels.resolve(index, self._dims[index]), rng
-            )

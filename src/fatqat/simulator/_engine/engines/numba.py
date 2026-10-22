@@ -17,8 +17,8 @@ or per shot. `_KERNEL_SPECS` is the statevector key-to-structure table; the
 density matrix derives its table from the same declarations because the
 Kronecker product preserves structure (see below).
 
-- `NumbaSVEngine` replaces gate application (`apply` / `_apply_local`),
-  `reset_subsystems`, and selects Numba measurement functions.
+- `NumbaSVEngine` replaces gate application (`apply` / `_apply_local`)
+  and selects Numba measurement and reset functions.
   Reset uses direct digit shifts shared with the compiled trajectory path.
 - `NumbaDMEngine` replaces `apply` / `apply_channel` and selects Numba
   measurement functions. It reuses the *same* coset-walk kernels as
@@ -132,13 +132,13 @@ from ..numerics.numba._fusion import (
     _fuse_gate_channels,
     _fuse_operator_payloads,
 )
-from ..numerics.numba._measurement import _sv_reset_kernel
 from ..numerics.numba._measurement import (
     _sv_probabilities_kernel,
     _dm_probabilities_kernel,
     _project_statevector,
     _project_density_matrix,
     _sample_basis_indices,
+    _reset_statevector,
 )
 from ..numerics.numba._preparation import (
     _MatrixStructureCache,
@@ -146,7 +146,6 @@ from ..numerics.numba._preparation import (
     _MAX_THREADS,
     _MIN_SIZE_TO_THREAD_DM,
     _compute_apply_plan,
-    _measured_layout,
 )
 from .numpy import (
     _NumpyOperatorEngine,
@@ -282,6 +281,8 @@ class NumbaSVEngine(NumpySVEngine):
     _measurement_kernels = _MeasurementKernels(
         _sv_probabilities_kernel, _project_statevector, _sample_basis_indices
     )
+
+    _reset_kernel = staticmethod(_reset_statevector)
 
     def __init__(self, name: str = "numba-sv"):
         super().__init__(name)
@@ -480,16 +481,6 @@ class NumbaSVEngine(NumpySVEngine):
             force_parallel=force_parallel,
         )
 
-    def reset_subsystems(
-        self, indices: Sequence[int], rng: np.random.Generator
-    ) -> None:
-        """Reset a sampled branch to zero using Numba digit shifts and one draw."""
-        assert len(indices) >= 1, "reset_subsystems requires at least one index"
-        strides, dims = _measured_layout(self._dims, indices)
-        self._state = _sv_reset_kernel(
-            np.ascontiguousarray(self.state), strides, dims, float(rng.random())
-        )
-
 
 # --- density-matrix kernels ---
 
@@ -507,7 +498,7 @@ class NumbaDMEngine(NumpyDMEngine):
     Overrides the numeric kernels of `NumpyDMEngine` and materializes the
     optional gate/channel rewrite once. Inherited measurement and execution
     helpers call the Numba kernels within the resolved thread scope.
-    ``reset_subsystems`` stays the inherited NumPy partial-trace channel (see
+    Reset keeps the NumPy partial-trace numerical function (see
     the module docstring).
 
     Both a gate and a channel apply as one super-operator pass over
@@ -858,6 +849,9 @@ class NumbaUnitaryEngine(  # pylint: disable=too-many-ancestors
         ),
         supports_process_shots=False,
     )
+
+    # Do not inherit the statevector reset operation through the kernel mixin.
+    _reset_kernel = None
 
     def __init__(self, name: str = "numba-unitary"):
         super().__init__(name)

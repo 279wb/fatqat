@@ -418,10 +418,10 @@ def test_column_kernel_matches_the_per_gate_kernels_bit_for_bit(method, no_fusio
     for step in nb._fuse_gate_channels(plan) if method == "superop" else plan:
         if isinstance(step, nb.ApplyMatrixStep):
             engine.apply(step)
-        elif isinstance(step, nb.ApplyChannelStep):
-            engine.apply_channel(step, generator)
         else:
-            engine.reset_subsystems(step.reset_indices, generator)
+            # This program contains gates and noise channels, with no resets.
+            assert isinstance(step, nb.ApplyChannelStep)
+            engine.apply_channel(step, generator)
 
     assert np.array_equal(fused, engine.export_state())
 

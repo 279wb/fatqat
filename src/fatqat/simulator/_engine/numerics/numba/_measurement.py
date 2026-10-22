@@ -268,3 +268,17 @@ def _sample_basis_indices(
     if shots is None:
         return int(_sample_index_kernel(probabilities, float(rng.random())))
     return _sample_indices_kernel(probabilities, rng.random(shots))
+
+
+def _reset_statevector(
+    state: np.ndarray,
+    indices: Sequence[int],
+    dims: Sequence[int],
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Reset one sampled branch using the fused Numba projection/shift kernel."""
+    assert len(indices) >= 1, "reset_subsystems requires at least one index"
+    strides, measured_dims = _measured_layout(dims, indices)
+    return _sv_reset_kernel(
+        np.ascontiguousarray(state), strides, measured_dims, float(rng.random())
+    )

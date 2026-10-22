@@ -33,6 +33,7 @@ from ..parallel import _run_shots_in_processes
 from ..state import EvolutionState, QuantumDataT
 from ..workflows.python import (
     _MeasurementKernels,
+    _ResetKernel,
     _PreparedPythonExecution,
     _run_operator_plan,
     _run_single_pass,
@@ -49,6 +50,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
 
     # Concrete engines declare all support; numeric/execution helpers may be shared.
     _measurement_kernels: _MeasurementKernels[QuantumDataT] | None
+    _reset_kernel: _ResetKernel[QuantumDataT] | None
     _capabilities: _EngineCapabilities
 
     def __init__(self, name: str):
@@ -305,7 +307,15 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
                 )
                 if policy.execution_path == "operator":
                     assert policy.shot_strategy == "none"
-                    _run_operator_plan(self, payload.plan, rng)
+                    assert self._evolution_state is not None
+                    _run_operator_plan(
+                        self,
+                        payload.plan,
+                        self._evolution_state,
+                        self._reset_kernel,
+                        context.system_dims,
+                        rng,
+                    )
                 else:
                     assert policy.execution_path == "single_pass"
                     assert self._evolution_state is not None
@@ -315,6 +325,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
                         payload.deferred_measurements,
                         self._evolution_state,
                         self._measurement_kernels,
+                        self._reset_kernel,
                         context,
                         rng,
                         state_requested=state_requested,
@@ -393,22 +404,12 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
                     plan,
                     self._evolution_state,
                     self._measurement_kernels,
+                    self._reset_kernel,
                     context,
                     np.random.default_rng(seed_sequence),
                 )
             )
         return snapshots
-
-    @abstractmethod
-    def reset_subsystems(
-        self, indices: Sequence[int], rng: np.random.Generator
-    ) -> None: ...
-
-    def reset_subsystem(self, index: int, rng: np.random.Generator) -> None:
-        """
-        Reset a single subsystem to the |0> state.
-        """
-        self.reset_subsystems([index], rng)
 
     @abstractmethod
     def apply(self, step: ApplyMatrixStep) -> None:

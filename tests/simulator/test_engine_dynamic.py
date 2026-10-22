@@ -15,21 +15,17 @@ from fatqat.simulator._engine.workflows.python import (
     _measure_subsystems,
 )
 
-from fatqat.simulator._engine.engines.numpy import NumpySVEngine
-from fatqat._backends.steps import ApplyMatrixStep
 
-_X = np.array([[0, 1], [1, 0]], dtype=complex)
-_H = np.array([[1, 1], [1, -1]], dtype=complex) / np.sqrt(2)
-
-
-@pytest.fixture(name="sv_engine_class", params=["numpy", "numba"])
-def fixture_sv_engine_class(request):
+@pytest.fixture(name="sv_reset", params=["numpy", "numba"])
+def fixture_sv_reset(request):
     if request.param == "numba":
         pytest.importorskip("numba")
-        from fatqat.simulator._engine.engines.numba import NumbaSVEngine
-
-        return NumbaSVEngine
-    return NumpySVEngine
+        from fatqat.simulator._engine.numerics.numba._measurement import (
+            _reset_statevector,
+        )
+    else:
+        from fatqat.simulator._engine.numerics.numpy._state import _reset_statevector
+    return _reset_statevector
 
 
 @pytest.mark.parametrize("runtime", ["numpy", "numba"])
@@ -52,35 +48,17 @@ def test_repeated_measurement_reports_the_same_outcome(runtime):
     assert set(counts) <= {"00", "11"}
 
 
-def test_reset_qubit_from_one_returns_zero():
-    eng = NumpySVEngine()
-    eng.initialize((2,))
-    eng.apply(ApplyMatrixStep(matrix=_X, target_indices=(0,)))  # |1>
-    eng.reset_subsystem(0, np.random.default_rng(0))
-    assert np.allclose(eng.export_state(), np.array([1, 0], dtype=complex))
-
-
-def test_reset_qubit_on_entangled_pair_conditions_the_partner(sv_engine_class):
-    # Bell pair (|00>+|11>)/sqrt2; reset qubit 0 -> partner is |0> or |1>, 50/50.
+def test_reset_qubit_on_entangled_pair_conditions_the_partner(sv_reset):
+    # Resetting q0 of a Bell pair conditions q1 on the sampled branch.
+    bell = np.array([1, 0, 0, 1], dtype=complex) / np.sqrt(2)
     outcomes = []
-    for s in range(200):
-        eng = sv_engine_class()
-        eng.initialize((2, 2))
-        eng.apply(ApplyMatrixStep(matrix=_H, target_indices=(0,)))
-        cx = np.array(
-            [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 1], [0, 0, 1, 0]],
-            dtype=complex,
-        )
-        eng.apply(ApplyMatrixStep(matrix=cx, target_indices=(0, 1)))
-        eng.reset_subsystem(0, np.random.default_rng(s))
-        st = eng.export_state()
-        # qubit 0 must be |0>: only indices with bit0 == 0 are allowed.
-        # Amplitude is on index 0 (partner 0) or 2 (partner 1).
-        nz = np.flatnonzero(np.round(np.abs(st), 6))
-        assert nz.size == 1 and nz[0] in (0, 2)
-        outcomes.append(int(nz[0] == 2))  # partner==1
-    frac = sum(outcomes) / len(outcomes)
-    assert 0.35 < frac < 0.65
+    for seed in range(200):
+        state = sv_reset(bell.copy(), (0,), (2, 2), np.random.default_rng(seed))
+        nonzero = np.flatnonzero(np.abs(state) > 1e-12)
+        assert nonzero.size == 1 and nonzero[0] in (0, 2)
+        assert np.isclose(np.linalg.norm(state), 1)
+        outcomes.append(int(nonzero[0] == 2))
+    assert 0.35 < sum(outcomes) / len(outcomes) < 0.65
 
 
 @pytest.mark.parametrize("runtime", ["numpy", "numba"])
@@ -114,20 +92,14 @@ def test_measure_subsystems_consumes_one_rng_draw_for_grouped_event():
     assert rng_grouped.random() == rng_one_draw.random()
 
 
-def test_reset_subsystems_resets_all_targets_with_one_grouped_collapse(sv_engine_class):
-    eng = sv_engine_class()
-    eng.initialize((2, 3, 2))
-    eng.apply(ApplyMatrixStep(matrix=_X, target_indices=(0,)))
-    shift = np.roll(np.eye(3, dtype=complex), 2, axis=0)
-    eng.apply(ApplyMatrixStep(matrix=shift, target_indices=(1,)))
-    eng.apply(ApplyMatrixStep(matrix=_H, target_indices=(2,)))
+def test_reset_subsystems_resets_all_targets_with_one_grouped_collapse(sv_reset):
+    state = np.zeros(12, dtype=complex)
+    state[[5, 11]] = 1 / np.sqrt(2)  # q0=1, q1=2; q2 remains in superposition.
     rng = np.random.default_rng(0)
-
-    eng.reset_subsystems((1, 0), rng)
-
+    result = sv_reset(state, (1, 0), (2, 3, 2), rng)
     expected = np.zeros(12, dtype=complex)
     expected[[0, 6]] = 1 / np.sqrt(2)
-    assert np.allclose(eng.export_state(), expected)
+    assert np.allclose(result, expected)
     reference_rng = np.random.default_rng(0)
     reference_rng.random()
     assert rng.random() == reference_rng.random()
