@@ -124,8 +124,7 @@ from .._execution_policy import (
 from .._numba_scope import _kernel_thread_workers, _thread_scope
 from ..numerics.numba._apply import (
     _classify_matrix,
-    _run_resolved,
-    _run_resolved_sparse,
+    _apply_matrix,
 )
 from ..numerics.numba._fusion import (
     _MIN_SIZE_TO_FUSE,
@@ -462,9 +461,7 @@ class NumbaSVEngine(NumpySVEngine):
         if plan is None:
             plan = self._build_apply_plan(targets)
             self._apply_plans[targets] = plan
-        matrix = np.ascontiguousarray(matrix, dtype=np.complex128)
-        state = np.ascontiguousarray(state, dtype=np.complex128)
-        return _run_resolved(state, matrix, plan, code, columns, values)
+        return _apply_matrix(state, matrix, plan, code, columns, values)
 
     def _build_apply_plan(
         self,
@@ -657,14 +654,10 @@ class NumbaDMEngine(NumpyDMEngine):
         diagonal / permutation pass.
         """
         superop, code, columns, values, sparse = self._resolve_superop(step)
-        rho = self.state
-        flat = np.ascontiguousarray(rho, dtype=np.complex128).reshape(-1)
         plan = self._sandwich_plan(tuple(step.target_indices))
-        if sparse is not None:
-            _run_resolved_sparse(flat, sparse[0], sparse[1], sparse[2], plan)
-        else:
-            _run_resolved(flat, superop, plan, code, columns, values)
-        self._state = flat.reshape(rho.shape)
+        self._state = _apply_matrix(
+            self.state, superop, plan, code, columns, values, sparse=sparse
+        )
 
     def apply(self, step: ApplyMatrixStep) -> None:
         """Apply one gate - key-aware super-operator pass (cached per step)."""
@@ -888,22 +881,6 @@ class NumbaUnitaryEngine(  # pylint: disable=too-many-ancestors
             max_workers=max_workers,
             force_parallel=force_parallel,
         )
-
-    def _launch_resolved(
-        self,
-        state: np.ndarray,
-        matrix: np.ndarray,
-        targets: Sequence[int],
-        code: int,
-        columns: np.ndarray,
-        values: np.ndarray,
-    ) -> np.ndarray:
-        """Run the inherited launch over the operator's flat ``(row, column)`` buffer."""
-        operator = np.ascontiguousarray(state, dtype=np.complex128)
-        flat = super()._launch_resolved(
-            operator.reshape(-1), matrix, targets, code, columns, values
-        )
-        return flat.reshape(operator.shape)
 
 
 # Deep base list by design: the leaf adds only its plan builder and payloads.

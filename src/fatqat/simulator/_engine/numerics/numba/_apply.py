@@ -269,74 +269,78 @@ def _apply_sparse_parallel(
     return state
 
 
-def _run_resolved(
+def _apply_matrix(
     state: np.ndarray,
     matrix: np.ndarray,
     plan: tuple,
     code: int,
     columns: np.ndarray,
     values: np.ndarray,
+    *,
+    sparse: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
 ) -> np.ndarray:
-    """Launch an already-classified matrix through a precomputed apply plan.
+    """Apply a classified matrix to native storage using a precomputed layout.
 
-    Routes to the serial or parallel coset kernel by the plan's chunk count.
-    Shared by the statevector launch path and the density-matrix
-    super-operator pass; ``state`` must be contiguous ``complex128`` and is
-    updated in place (and returned).
+    The layout describes flat storage, including column-batched operators and
+    vectorized density matrices. Buffer conversion and flattening belong here;
+    callers supply numerical operands without managing the kernel's flat view.
+    Contiguous complex128 input is updated in place, with its shape preserved.
+    CSR operands select sparse execution; otherwise ``code`` selects dense,
+    diagonal, or permutation arithmetic. The layout controls kernel threading.
     """
+    state = np.ascontiguousarray(state, dtype=np.complex128)
+    flat = state if state.ndim == 1 else state.reshape(-1)
     offsets, comp_strides, comp_dims, num_cosets, n_chunks = plan
-    if n_chunks <= 1:
-        return _apply_resolved_serial(
-            state,
-            code,
-            matrix,
-            columns,
-            values,
-            offsets,
-            comp_strides,
-            comp_dims,
-            num_cosets,
-        )
-    return _apply_resolved_parallel(
-        state,
-        code,
-        matrix,
-        columns,
-        values,
-        offsets,
-        comp_strides,
-        comp_dims,
-        num_cosets,
-        n_chunks,
-    )
-
-
-def _run_resolved_sparse(
-    state: np.ndarray,
-    indptr: np.ndarray,
-    indices: np.ndarray,
-    data: np.ndarray,
-    plan: tuple,
-) -> np.ndarray:
-    """Launch a CSR super-operator through a precomputed apply plan.
-
-    The sparse analog of `_run_resolved`: same serial/parallel routing by the
-    plan's chunk count, same in-place update, but the coset kernel walks the
-    CSR nonzeros instead of a dense matrix (see the sparse kernels above).
-    """
-    offsets, comp_strides, comp_dims, num_cosets, n_chunks = plan
-    if n_chunks <= 1:
-        return _apply_sparse_serial(
-            state, indptr, indices, data, offsets, comp_strides, comp_dims, num_cosets
-        )
-    return _apply_sparse_parallel(
-        state,
-        indptr,
-        indices,
-        data,
-        offsets,
-        comp_strides,
-        comp_dims,
-        num_cosets,
-        n_chunks,
-    )
+    if sparse is not None:
+        indptr, indices, data = sparse
+        if n_chunks <= 1:
+            result = _apply_sparse_serial(
+                flat,
+                indptr,
+                indices,
+                data,
+                offsets,
+                comp_strides,
+                comp_dims,
+                num_cosets,
+            )
+        else:
+            result = _apply_sparse_parallel(
+                flat,
+                indptr,
+                indices,
+                data,
+                offsets,
+                comp_strides,
+                comp_dims,
+                num_cosets,
+                n_chunks,
+            )
+    else:
+        matrix = np.ascontiguousarray(matrix, dtype=np.complex128)
+        if n_chunks <= 1:
+            result = _apply_resolved_serial(
+                flat,
+                code,
+                matrix,
+                columns,
+                values,
+                offsets,
+                comp_strides,
+                comp_dims,
+                num_cosets,
+            )
+        else:
+            result = _apply_resolved_parallel(
+                flat,
+                code,
+                matrix,
+                columns,
+                values,
+                offsets,
+                comp_strides,
+                comp_dims,
+                num_cosets,
+                n_chunks,
+            )
+    return result if state.ndim == 1 else result.reshape(state.shape)
