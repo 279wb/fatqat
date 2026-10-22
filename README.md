@@ -17,13 +17,13 @@ The execution targets accept the same `Program` type and return results through
 the same `Job`/`Result` workflow. Each target still validates what it can
 physically or mathematically realize.
 
-## [If AI can write the code, where can I make the biggest difference?](https://fatqat.readthedocs.io/en/latest/contributing/)
+## [If AI can write the code, where can I make the biggest difference?](https://fatqat.readthedocs.io/en/latest/contributing/contributing-in-the-ai-era/)
 
 **AI makes code easier to write. Your questions, judgment, and reviews help make it worth writing.**
 
 Ask a useful question, share a problem, review a design, improve an explanation,
 or contribute code.
-**[Read the contribution guide →](https://fatqat.readthedocs.io/en/latest/contributing/)**
+**[Read the contribution guide →](https://fatqat.readthedocs.io/en/latest/contributing/contributing-in-the-ai-era/)**
 
 ## Installation
 

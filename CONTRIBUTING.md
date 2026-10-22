@@ -6,7 +6,7 @@ substantial features or architectural changes with the maintainers before
 investing in a large implementation.
 
 For a practical introduction to asking useful questions, reviewing changes,
-and contributing, read [How to contribute](https://fatqat.readthedocs.io/en/latest/contributing/).
+and contributing, read [Contributing in the AI era](https://fatqat.readthedocs.io/en/latest/contributing/contributing-in-the-ai-era/).
 
 ## AI tools usage policy
 
