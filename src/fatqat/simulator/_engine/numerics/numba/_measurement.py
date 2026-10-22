@@ -100,7 +100,7 @@ def _sv_probabilities_kernel(
 
 
 @njit(cache=True)
-def _sv_project_kernel(
+def _project_statevector_strided(
     state: np.ndarray,
     measured_strides: np.ndarray,
     measured_dims: np.ndarray,
@@ -150,7 +150,7 @@ def _sv_reset_kernel(
     local shift matrices or routing reset through generic gate application.
     """
     index = _sample_index_kernel(_sv_probabilities_kernel(state), u)
-    state = _sv_project_kernel(state, reset_strides, reset_dims, index)
+    state = _project_statevector_strided(state, reset_strides, reset_dims, index)
     for j in range(reset_strides.shape[0]):
         sub_stride = reset_strides[j]
         sub_dim = reset_dims[j]
@@ -195,7 +195,7 @@ def _dm_probabilities_kernel(
 
 
 @njit(cache=True)
-def _dm_project_kernel(
+def _project_density_matrix_strided(
     rho: np.ndarray,
     measured_strides: np.ndarray,
     measured_dims: np.ndarray,
@@ -240,14 +240,14 @@ def _dm_project_kernel(
     return out
 
 
-# --- Python-workflow adapters (compiled workflows use the kernels above) ---
+# --- Runtime-facing measurement functions ---
 
 
 def _project_statevector(
     state: np.ndarray, index: int, indices: Sequence[int], dims: Sequence[int]
 ) -> np.ndarray:
     strides, measured_dims = _measured_layout(dims, indices)
-    return _sv_project_kernel(
+    return _project_statevector_strided(
         np.ascontiguousarray(state), strides, measured_dims, index
     )
 
@@ -256,7 +256,7 @@ def _project_density_matrix(
     state: np.ndarray, index: int, indices: Sequence[int], dims: Sequence[int]
 ) -> np.ndarray:
     strides, measured_dims = _measured_layout(dims, indices)
-    return _dm_project_kernel(
+    return _project_density_matrix_strided(
         np.ascontiguousarray(state), strides, measured_dims, index
     )
 

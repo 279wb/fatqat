@@ -169,14 +169,6 @@ from ..workflows.numba.trajectories import (
     _plan_compilable,
 )
 
-# Select stateless functions once; trajectory initialization binds no callbacks.
-_SV_MEASUREMENT = _MeasurementKernels(
-    _sv_probabilities_kernel, _project_statevector, _sample_basis_indices
-)
-_DM_MEASUREMENT = _MeasurementKernels(
-    _dm_probabilities_kernel, _project_density_matrix, _sample_basis_indices
-)
-
 
 class _PreparedSVExecution(NamedTuple):
     """Python plan, optional compiled trajectories, and reusable SV layouts."""
@@ -287,7 +279,9 @@ class NumbaSVEngine(NumpySVEngine):
             workflow="numba_trajectories",
         )
 
-    _measurement_kernels = _SV_MEASUREMENT
+    _measurement_kernels = _MeasurementKernels(
+        _sv_probabilities_kernel, _project_statevector, _sample_basis_indices
+    )
 
     def __init__(self, name: str = "numba-sv"):
         super().__init__(name)
@@ -361,6 +355,7 @@ class NumbaSVEngine(NumpySVEngine):
                 self._build_apply_plan,
                 self._resolve_structure,
             )
+        # TODO: python_execution is redundant with compiled
         return _PreparedSVExecution(
             python_execution, compiled, tuple(self._apply_plans.items())
         )
@@ -534,7 +529,9 @@ class NumbaDMEngine(NumpyDMEngine):
         supports_process_shots=True,
     )
 
-    _measurement_kernels = _DM_MEASUREMENT
+    _measurement_kernels = _MeasurementKernels(
+        _dm_probabilities_kernel, _project_density_matrix, _sample_basis_indices
+    )
 
     def __init__(self, name: str = "numba-dm"):
         super().__init__(name)

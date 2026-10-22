@@ -117,7 +117,7 @@ def _apply_channel_step(
     the ``sqrt(p_chosen)`` the weighing already computed - both on the ``d x d``
     operator, so nothing passes over the state to renormalize. The round-off
     that leaves in the norm is absorbed by `_sv_probabilities_kernel` and
-    `_sv_project_kernel`.
+    `_project_statevector_strided`.
 
     Both consume exactly one uniform ``u``, so which weighing a channel takes
     never shifts the shot's RNG stream.

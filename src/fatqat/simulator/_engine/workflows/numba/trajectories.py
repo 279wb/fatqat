@@ -33,7 +33,7 @@ from ...numerics.numba._channel import _apply_channel_step
 from ...numerics.numba._measurement import (
     _sample_index_kernel,
     _sv_probabilities_kernel,
-    _sv_project_kernel,
+    _project_statevector_strided,
     _sv_reset_kernel,
 )
 from ...state import NumbaClassicalState, NumbaEvolutionState
@@ -370,7 +370,7 @@ def _measure_step(
     length = me_len[m]
     index = _sample_index_kernel(_sv_probabilities_kernel(state), uniforms[draw])
     draw += 1
-    state = _sv_project_kernel(
+    state = _project_statevector_strided(
         state, me_stride[start : start + length], me_dim[start : start + length], index
     )
     for j in range(length):

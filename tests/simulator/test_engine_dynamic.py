@@ -5,8 +5,13 @@ from fatqat.program import Program
 from fatqat.simulator import Simulator
 import fatqat.operations as ops
 from fatqat.simulator._engine.state import EvolutionState
-from fatqat.simulator._engine.engines.numpy import _SV_MEASUREMENT
+from fatqat.simulator._engine.numerics.numpy._measurement import (
+    _statevector_probabilities,
+    _project_statevector,
+    _sample_basis_indices,
+)
 from fatqat.simulator._engine.workflows.python import (
+    _MeasurementKernels,
     _measure_subsystems,
 )
 
@@ -100,7 +105,10 @@ def test_measure_subsystems_consumes_one_rng_draw_for_grouped_event():
     # Seed compatibility deliberately constrains grouped measurement to one draw.
     state = EvolutionState(np.array([1, 0, 0, 1], dtype=complex) / np.sqrt(2))
     rng_grouped = np.random.default_rng(11)
-    _measure_subsystems(state, _SV_MEASUREMENT, (2, 2), (0, 1), rng_grouped)
+    kernels = _MeasurementKernels(
+        _statevector_probabilities, _project_statevector, _sample_basis_indices
+    )
+    _measure_subsystems(state, kernels, (2, 2), (0, 1), rng_grouped)
     rng_one_draw = np.random.default_rng(11)
     rng_one_draw.choice(4, p=np.array([0.5, 0.0, 0.0, 0.5]))
     assert rng_grouped.random() == rng_one_draw.random()

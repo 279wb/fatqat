@@ -113,15 +113,6 @@ from ..numerics.numpy._state import (
 from ..workflows.python import _MeasurementKernels, _collapse
 from ..state import ClassicalState, EvolutionState
 
-# Select stateless functions once; trajectory initialization binds no callbacks.
-_SV_MEASUREMENT = _MeasurementKernels(
-    _statevector_probabilities, _project_statevector, _sample_basis_indices
-)
-_DM_MEASUREMENT = _MeasurementKernels(
-    _density_matrix_probabilities, _project_density_matrix, _sample_basis_indices
-)
-
-
 # --- shared NumPy operations ---
 
 
@@ -246,7 +237,9 @@ class NumpySVEngine(_NumpyMatrixEngine):
     def _retain_step_caches(self, plan: tuple[ResolvedStep, ...]) -> None:
         self._channel_routes.retain(plan)
 
-    _measurement_kernels = _SV_MEASUREMENT
+    _measurement_kernels = _MeasurementKernels(
+        _statevector_probabilities, _project_statevector, _sample_basis_indices
+    )
 
     _allocate = staticmethod(_allocate_statevector)
 
@@ -333,7 +326,9 @@ class NumpyDMEngine(_NumpyMatrixEngine):
     def __init__(self, name: str = "numpy-dm"):
         super().__init__(name)
 
-    _measurement_kernels = _DM_MEASUREMENT
+    _measurement_kernels = _MeasurementKernels(
+        _density_matrix_probabilities, _project_density_matrix, _sample_basis_indices
+    )
 
     _allocate = staticmethod(_allocate_density_matrix)
 
@@ -475,7 +470,7 @@ class NumpySuperopEngine(_NumpyOperatorEngine, NumpyDMEngine):
         """Return ``M_T . M_T^dagger`` applied to every column at once."""
         return _apply_superoperator(
             rho, matrix, targets, self._dims, self._reversed_dims
-            )
+        )
 
     def reset_subsystems(
         self, indices: Sequence[int], rng: np.random.Generator | None = None
