@@ -13,6 +13,8 @@ from numba import njit, prange
 _DENSE = 0
 _DIAGONAL = 1
 _PERMUTATION = 2
+# CSR is selected during operand preparation, not by `_classify_matrix`.
+_SPARSE = 3
 
 
 @njit(cache=True)
@@ -133,12 +135,33 @@ def _apply_permutation_range(
         base = _advance_base(base, comp_strides, comp_dims, counter)
 
 
-@njit(cache=True)
+@njit(cache=True, inline="always")
 def _apply_resolved_range(
-    state, code, matrix, columns, values, offsets, comp_strides, comp_dims, start, end
+    state,
+    code,
+    matrix,
+    columns,
+    values,
+    offsets,
+    comp_strides,
+    comp_dims,
+    start,
+    end,
+    indptr=None,
 ) -> None:  # pragma: no cover - compiled by Numba
-    """Route one coset range to the structure-specialized kernel."""
-    if code == _DIAGONAL:
+    """Route one coset range to the structure-specialized kernel.
+
+    Dense uses the full ``matrix``; diagonal uses ``values[row]`` only.
+    Permutation uses one source ``columns[row]`` and multiplier ``values[row]``
+    per output row. CSR uses ``columns`` and ``values`` for its nonzero entries,
+    with ``indptr`` delimiting rows. Non-CSR representations omit ``indptr``;
+    each kernel ignores operands it does not use.
+    """
+    if code == _SPARSE and indptr is not None:
+        _apply_sparse_range(
+            state, indptr, columns, values, offsets, comp_strides, comp_dims, start, end
+        )
+    elif code == _DIAGONAL:
         _apply_diagonal_range(
             state, values, offsets, comp_strides, comp_dims, start, end
         )
@@ -152,7 +175,16 @@ def _apply_resolved_range(
 
 @njit(cache=True)
 def _apply_resolved_serial(
-    state, code, matrix, columns, values, offsets, comp_strides, comp_dims, num_cosets
+    state,
+    code,
+    matrix,
+    columns,
+    values,
+    offsets,
+    comp_strides,
+    comp_dims,
+    num_cosets,
+    indptr=None,
 ) -> np.ndarray:  # pragma: no cover - compiled by Numba
     """Single-threaded application of an already-classified gate."""
     _apply_resolved_range(
@@ -166,6 +198,7 @@ def _apply_resolved_serial(
         comp_dims,
         0,
         num_cosets,
+        indptr,
     )
     return state
 
@@ -182,6 +215,7 @@ def _apply_resolved_parallel(
     comp_dims,
     num_cosets,
     n_chunks,
+    indptr=None,
 ) -> np.ndarray:  # pragma: no cover - compiled by Numba
     """Parallel application of an already-classified gate over coset chunks."""
     for chunk in prange(n_chunks):  # pylint: disable=not-an-iterable
@@ -199,6 +233,7 @@ def _apply_resolved_parallel(
                 comp_dims,
                 start,
                 end,
+                indptr,
             )
     return state
 
@@ -209,7 +244,7 @@ def _apply_resolved_parallel(
 # even when neither diagonal nor a permutation (two-qubit depolarizing fills
 # ``2 d**2 - d`` of ``d**4`` entries), which `_classify_matrix` calls dense.
 # These kernels walk a CSR of the exact nonzeros in column order - bit-identical
-# to the dense walk, at a fraction of the multiplies. `NumbaDMEngine` only.
+# to the dense walk, at a fraction of the multiplies.
 
 
 @njit(cache=True)
@@ -235,40 +270,6 @@ def _apply_sparse_range(
         base = _advance_base(base, comp_strides, comp_dims, counter)
 
 
-@njit(cache=True)
-def _apply_sparse_serial(
-    state, indptr, indices, data, offsets, comp_strides, comp_dims, num_cosets
-) -> np.ndarray:  # pragma: no cover - compiled by Numba
-    """Single-threaded sparse super-operator application."""
-    _apply_sparse_range(
-        state, indptr, indices, data, offsets, comp_strides, comp_dims, 0, num_cosets
-    )
-    return state
-
-
-@njit(cache=True, parallel=True)
-def _apply_sparse_parallel(
-    state, indptr, indices, data, offsets, comp_strides, comp_dims, num_cosets, n_chunks
-) -> np.ndarray:  # pragma: no cover - compiled by Numba
-    """Parallel sparse super-operator application over coset chunks."""
-    for chunk in prange(n_chunks):  # pylint: disable=not-an-iterable
-        start = chunk * num_cosets // n_chunks
-        end = (chunk + 1) * num_cosets // n_chunks
-        if start < end:
-            _apply_sparse_range(
-                state,
-                indptr,
-                indices,
-                data,
-                offsets,
-                comp_strides,
-                comp_dims,
-                start,
-                end,
-            )
-    return state
-
-
 def _apply_matrix(
     state: np.ndarray,
     matrix: np.ndarray,
@@ -291,56 +292,37 @@ def _apply_matrix(
     state = np.ascontiguousarray(state, dtype=np.complex128)
     flat = state if state.ndim == 1 else state.reshape(-1)
     offsets, comp_strides, comp_dims, num_cosets, n_chunks = plan
+    indptr = None
     if sparse is not None:
-        indptr, indices, data = sparse
-        if n_chunks <= 1:
-            result = _apply_sparse_serial(
-                flat,
-                indptr,
-                indices,
-                data,
-                offsets,
-                comp_strides,
-                comp_dims,
-                num_cosets,
-            )
-        else:
-            result = _apply_sparse_parallel(
-                flat,
-                indptr,
-                indices,
-                data,
-                offsets,
-                comp_strides,
-                comp_dims,
-                num_cosets,
-                n_chunks,
-            )
+        code = _SPARSE
+        indptr, columns, values = sparse
     else:
         matrix = np.ascontiguousarray(matrix, dtype=np.complex128)
-        if n_chunks <= 1:
-            result = _apply_resolved_serial(
-                flat,
-                code,
-                matrix,
-                columns,
-                values,
-                offsets,
-                comp_strides,
-                comp_dims,
-                num_cosets,
-            )
-        else:
-            result = _apply_resolved_parallel(
-                flat,
-                code,
-                matrix,
-                columns,
-                values,
-                offsets,
-                comp_strides,
-                comp_dims,
-                num_cosets,
-                n_chunks,
-            )
+    if n_chunks <= 1:
+        result = _apply_resolved_serial(
+            flat,
+            code,
+            matrix,
+            columns,
+            values,
+            offsets,
+            comp_strides,
+            comp_dims,
+            num_cosets,
+            indptr,
+        )
+    else:
+        result = _apply_resolved_parallel(
+            flat,
+            code,
+            matrix,
+            columns,
+            values,
+            offsets,
+            comp_strides,
+            comp_dims,
+            num_cosets,
+            n_chunks,
+            indptr,
+        )
     return result if state.ndim == 1 else result.reshape(state.shape)

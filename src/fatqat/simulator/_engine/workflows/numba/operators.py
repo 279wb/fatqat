@@ -7,7 +7,7 @@ from numba import njit, prange
 
 from ..._execution_policy import _ExecutionPolicy as ExecutionPolicy
 from ..._numba_scope import _kernel_thread_workers
-from ...numerics.numba._apply import _DENSE, _DIAGONAL, _PERMUTATION
+from ...numerics.numba._apply import _DENSE, _DIAGONAL, _PERMUTATION, _SPARSE
 from ...numerics.numba._operator import (
     _apply_dense_columns,
     _apply_diagonal_columns,
@@ -15,11 +15,6 @@ from ...numerics.numba._operator import (
     _apply_sparse_columns,
 )
 from ...numerics.numba._preparation import _compute_apply_plan
-
-# Set by `_pack_operator_plan` for a step whose super-operator resolved to a
-# CSR (`_superop_csr`); `_classify_matrix` never returns it.
-_SPARSE = 3
-
 
 # --- compiled whole-plan operator kernels (one parallel region) ---
 #
