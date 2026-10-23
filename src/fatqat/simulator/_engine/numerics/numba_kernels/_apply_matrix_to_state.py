@@ -12,7 +12,7 @@ import numpy as np
 from ....._backends.steps import ApplyChannelStep, ApplyMatrixStep
 from ._apply import _apply_matrix, _classify_matrix
 from .....noise.nb import _jump_branch_kernel
-from ..numpy_kernels._state import _ChannelRouteCache, _sample_unitary
+from ..numpy_kernels._channel import _ChannelRouteCache, _sample_unitary
 from ._matrix_cache import (
     _MatrixStructureCache,
     _SuperoperatorCache,

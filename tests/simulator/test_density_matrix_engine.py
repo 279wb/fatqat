@@ -10,7 +10,7 @@ from fatqat.simulator._engine.numerics.numpy_kernels._measurement import (
     _density_matrix_probabilities,
 )
 
-from fatqat.simulator._engine.numerics.numpy_kernels._state import _reset_density_matrix
+from fatqat.simulator._engine.numerics.numpy_kernels._reset import _reset_density_matrix
 from fatqat.simulator._engine.engines.numpy_engine import NumpyDMEngine, NumpySVEngine
 from fatqat._backends.steps import ApplyMatrixStep
 

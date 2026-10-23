@@ -24,7 +24,7 @@ def fixture_sv_reset(request):
             _reset_statevector,
         )
     else:
-        from fatqat.simulator._engine.numerics.numpy_kernels._state import (
+        from fatqat.simulator._engine.numerics.numpy_kernels._reset import (
             _reset_statevector,
         )
     return _reset_statevector

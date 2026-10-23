@@ -92,23 +92,29 @@ from ..numerics.numpy_kernels._measurement import (
     _project_density_matrix,
     _sample_basis_indices,
 )
-from ..numerics.numpy_kernels._state import (
+from ..numerics.numpy_kernels._channel import (
     _apply_channel_statevector,
     _apply_channel_density_matrix,
     _apply_channel_superoperator,
     _ChannelRouteCache,
+)
+from ..numerics.numpy_kernels._reset import (
     _ResetChannelCache,
+    _reset_density_matrix,
+    _reset_statevector,
+    _reset_superoperator,
+)
+from ..numerics.numpy_kernels._state import (
     _allocate_statevector,
     _allocate_density_matrix,
     _allocate_unitary,
     _allocate_superoperator,
+)
+from ..numerics.numpy_kernels._apply import (
     _apply_matrix_statevector,
     _apply_matrix_density_matrix,
     _apply_matrix_unitary,
     _apply_matrix_superoperator,
-    _reset_density_matrix,
-    _reset_statevector,
-    _reset_superoperator,
 )
 from ..workflows.python_workflow import _MeasurementKernels, _PythonExecution
 from ..state import ClassicalState, EvolutionState

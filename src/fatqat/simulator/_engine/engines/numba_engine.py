@@ -148,7 +148,7 @@ from ..numerics.numba_kernels._apply_matrix_to_state import (
     _apply_channel_density_matrix,
     _apply_superoperator_to_state,
 )
-from ..numerics.numpy_kernels._state import _reset_density_matrix, _reset_superoperator
+from ..numerics.numpy_kernels._reset import _reset_density_matrix, _reset_superoperator
 from .numpy_engine import (
     _NumpyOperatorEngine,
     NumpyDMEngine,
