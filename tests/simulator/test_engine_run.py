@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -69,37 +71,47 @@ def _run(
 
 
 @pytest.mark.parametrize("density_matrix", [False, True])
-def test_execution_survives_building_another_system(density_matrix):
+def test_execution_survives_layout_changes(density_matrix):
     pytest.importorskip("numba")
     from fatqat.simulator._engine.engines.numba import NumbaSVEngine, NumbaDMEngine
 
     engine = NumbaDMEngine() if density_matrix else NumbaSVEngine()
-    plan = (ApplyMatrixStep(np.array([[0, 1], [1, 0]], dtype=complex), (0,)),)
-    contexts = [
-        _ExecutionContext(
+    # Flip the first local target; target order and mixed dimensions determine
+    # its position in the full state. Reuse layouts, then change each input.
+    matrix = np.kron(np.array([[0, 1], [1, 0]], dtype=complex), np.eye(2))
+    threaded = replace(_SERIAL, kernel_strategy="threads", worker_limit=2)
+    executions = []
+    for dims, targets, policy in (
+        ((2, 2), (0, 1), _SERIAL),
+        ((2, 2), (0, 1), _SERIAL),
+        ((2, 2), (1, 0), _SERIAL),
+        ((2, 3, 2), (0, 2), _SERIAL),
+        ((2, 3, 2), (0, 2), threaded),
+    ):
+        context = _ExecutionContext(
             request=_ResultRequest(counts=False, final_state=True),
             system_dims=dims,
             n_clbits=0,
             shots=1,
             seed=0,
         )
-        for dims in ((2,), (2, 3))
-    ]
-    executions = [
-        engine.materialize_execution(
-            plan, system_dims=context.system_dims, n_clbits=0, policy=_SERIAL
+        payload = engine.materialize_execution(
+            (ApplyMatrixStep(matrix, targets),),
+            system_dims=dims,
+            n_clbits=0,
+            policy=policy,
         )
-        for context in contexts
-    ]
-    for index in (0, 1, 0):
-        context = contexts[index]
-        result = engine.execute_in_process(
-            context, executions[index], _SERIAL, initial_state=_InitialEvolutionState()
-        )
-        expected = np.zeros(np.prod(context.system_dims), dtype=complex)
-        expected[1] = 1
+        expected = np.zeros(np.prod(dims), dtype=complex)
+        expected[int(np.prod(dims[: targets[0]]))] = 1
         if density_matrix:
             expected = np.outer(expected, expected.conj())
+        executions.append((context, payload, policy, expected))
+
+    # Old payloads must remain usable after both cache reuse and pruning.
+    for context, payload, policy, expected in reversed(executions):
+        result = engine.execute_in_process(
+            context, payload, policy, initial_state=_InitialEvolutionState()
+        )
         np.testing.assert_allclose(result.state, expected)
 
 

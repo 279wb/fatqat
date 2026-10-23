@@ -138,6 +138,7 @@ from ..numerics.numba._preparation import (
     _MAX_THREADS,
 )
 from ..numerics.numba._apply_matrix_to_state import (
+    _ApplyLayoutCache,
     _apply_matrix_statevector,
     _apply_channel_statevector,
     _apply_channel_density_matrix,
@@ -272,6 +273,7 @@ class NumbaSVEngine(NumpySVEngine):
     def __init__(self, name: str = "numba-sv"):
         super().__init__(name)
         self._matrix_structures = _MatrixStructureCache()
+        self._layout_cache = _ApplyLayoutCache(_build_statevector_plan)
 
     def _bind_kernels_to_python_workflow(
         self,
@@ -280,8 +282,8 @@ class NumbaSVEngine(NumpySVEngine):
         *,
         policy: ExecutionPolicy | None = None,
     ) -> _PythonExecution:
-        # Layouts belong to this execution, not the engine. Initializing another
-        # trajectory or preparing another plan cannot replace these resources.
+        # Each execution owns its mapping, while unchanged numerical layouts
+        # are reused across repeated runs and sweep rows.
         operator = self._state_field == "unitary"
         targets = {
             tuple(step.target_indices)
@@ -289,17 +291,13 @@ class NumbaSVEngine(NumpySVEngine):
             if isinstance(step, (ApplyMatrixStep, ApplyChannelStep))
         }
         workers = _kernel_thread_workers(policy) if policy else _MAX_THREADS
-        plans = {
-            target: _build_statevector_plan(
-                self._dims,
-                target,
-                operator=operator,
-                max_workers=workers,
-                force_parallel=policy is not None
-                and policy.kernel_strategy == "threads",
-            )
-            for target in targets
-        }
+        plans = self._layout_cache.for_targets(
+            self._dims,
+            targets,
+            operator=operator,
+            max_workers=workers,
+            force_parallel=policy is not None and policy.kernel_strategy == "threads",
+        )
         # TODO Those None if operator indicate that the operator path does not support
         # measurements or resets. Should be implemented in the operator engines.
         return _PythonExecution(
@@ -423,6 +421,7 @@ class NumbaDMEngine(NumpyDMEngine):
     def __init__(self, name: str = "numba-dm"):
         super().__init__(name)
         self._superoperators = _SuperoperatorCache()
+        self._layout_cache = _ApplyLayoutCache(_build_density_matrix_plan)
 
     def _bind_kernels_to_python_workflow(
         self,
@@ -438,17 +437,13 @@ class NumbaDMEngine(NumpyDMEngine):
             if isinstance(step, (ApplyMatrixStep, ApplyChannelStep))
         }
         workers = _kernel_thread_workers(policy) if policy else _MAX_THREADS
-        plans = {
-            target: _build_density_matrix_plan(
-                self._dims,
-                target,
-                operator=operator,
-                max_workers=workers,
-                force_parallel=policy is not None
-                and policy.kernel_strategy == "threads",
-            )
-            for target in targets
-        }
+        plans = self._layout_cache.for_targets(
+            self._dims,
+            targets,
+            operator=operator,
+            max_workers=workers,
+            force_parallel=policy is not None and policy.kernel_strategy == "threads",
+        )
         return _PythonExecution(
             plan=plan,
             deferred_measurements=measurements,

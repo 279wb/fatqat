@@ -5,7 +5,7 @@ numerical resources without retaining an engine or an evolving state. Target
 layouts are complete before execution and are only read by these operations.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from math import prod
 
 import numpy as np
@@ -69,6 +69,49 @@ def _build_density_matrix_plan(
         max_workers=max_workers,
         force_parallel=force_parallel,
     )
+
+
+class _ApplyLayoutCache:
+    """Reuse numerical layouts across Python executions with matching inputs.
+
+    Retain only the latest binding's layouts, without retaining steps or states.
+    Each binding gets a separate target mapping; its layout arrays are shared
+    and treated as immutable by the numerical functions. Pruning this cache
+    cannot change a previously bound execution, and execution never restores
+    or updates the cache.
+    """
+
+    def __init__(self, build_plan: Callable[..., tuple]):
+        self._build_plan = build_plan
+        self._entries: dict[tuple, tuple] = {}
+
+    def for_targets(
+        self,
+        dims: tuple[int, ...],
+        targets: Iterable[tuple[int, ...]],
+        *,
+        operator: bool,
+        max_workers: int,
+        force_parallel: bool,
+    ) -> dict[tuple[int, ...], tuple]:
+        """Reuse matching layouts and build the missing ones for this binding."""
+        entries = {}
+        plans = {}
+        for target in targets:
+            key = (dims, target, operator, max_workers, force_parallel)
+            layout = self._entries.get(key)
+            if layout is None:
+                layout = self._build_plan(
+                    dims,
+                    target,
+                    operator=operator,
+                    max_workers=max_workers,
+                    force_parallel=force_parallel,
+                )
+            entries[key] = layout
+            plans[target] = layout
+        self._entries = entries
+        return plans
 
 
 def _apply_matrix_statevector(
