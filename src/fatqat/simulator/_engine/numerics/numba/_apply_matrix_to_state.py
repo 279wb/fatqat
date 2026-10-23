@@ -23,16 +23,20 @@ from ._preparation import (
 )
 
 
-def _build_statevector_plan(
+def _build_unitary_apply_layout(
     dims: Sequence[int],
     targets: Sequence[int],
     *,
-    operator: bool = False,
+    batch_columns: bool = False,
     max_workers: int = _MAX_THREADS,
     force_parallel: bool = False,
 ) -> tuple:
-    """Build a statevector layout, optionally batching operator columns."""
-    if operator:
+    """Build a matrix-application layout over the physical dimensions.
+
+    ``batch_columns`` adds a never-targeted column dimension for a unitary
+    buffer, so the matrix acts independently on every column.
+    """
+    if batch_columns:
         dims = (prod(dims),) + tuple(dims)
         targets = tuple(1 + target for target in targets)
     return _compute_apply_plan(
@@ -40,24 +44,25 @@ def _build_statevector_plan(
     )
 
 
-def _build_density_matrix_plan(
+def _build_superoperator_apply_layout(
     dims: Sequence[int],
     targets: Sequence[int],
     *,
-    operator: bool = False,
+    batch_columns: bool = False,
     max_workers: int = _MAX_THREADS,
     force_parallel: bool = False,
 ) -> tuple:
     """Build the ket-first local layout over doubled bra/ket dimensions.
 
     Ket targets precede bra targets so local indices match kron(M, conj(M)).
-    An accumulated superoperator adds a never-targeted column dimension.
+    ``batch_columns`` adds a never-targeted column dimension for an accumulated
+    superoperator buffer.
     """
     dims = tuple(dims)
     n = len(dims)
-    shift = int(operator)
+    shift = int(batch_columns)
     row_dims = dims + dims
-    if operator:
+    if batch_columns:
         row_dims = (prod(dims) ** 2,) + row_dims
     super_targets = tuple(shift + n + t for t in targets) + tuple(
         shift + t for t in targets
@@ -81,8 +86,8 @@ class _ApplyLayoutCache:
     or updates the cache.
     """
 
-    def __init__(self, build_plan: Callable[..., tuple]):
-        self._build_plan = build_plan
+    def __init__(self, build_layout: Callable[..., tuple]):
+        self._build_layout = build_layout
         self._entries: dict[tuple, tuple] = {}
 
     def for_targets(
@@ -90,7 +95,7 @@ class _ApplyLayoutCache:
         dims: tuple[int, ...],
         targets: Iterable[tuple[int, ...]],
         *,
-        operator: bool,
+        batch_columns: bool,
         max_workers: int,
         force_parallel: bool,
     ) -> dict[tuple[int, ...], tuple]:
@@ -98,13 +103,13 @@ class _ApplyLayoutCache:
         entries = {}
         plans = {}
         for target in targets:
-            key = (dims, target, operator, max_workers, force_parallel)
+            key = (dims, target, batch_columns, max_workers, force_parallel)
             layout = self._entries.get(key)
             if layout is None:
-                layout = self._build_plan(
+                layout = self._build_layout(
                     dims,
                     target,
-                    operator=operator,
+                    batch_columns=batch_columns,
                     max_workers=max_workers,
                     force_parallel=force_parallel,
                 )

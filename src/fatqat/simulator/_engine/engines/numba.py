@@ -143,8 +143,8 @@ from ..numerics.numba._apply_matrix_to_state import (
     _apply_channel_statevector,
     _apply_channel_density_matrix,
     _apply_superoperator_to_state,
-    _build_statevector_plan,
-    _build_density_matrix_plan,
+    _build_unitary_apply_layout,
+    _build_superoperator_apply_layout,
 )
 from ..numerics.numpy._state import _reset_density_matrix, _reset_superoperator
 from .numpy import (
@@ -273,7 +273,7 @@ class NumbaSVEngine(NumpySVEngine):
     def __init__(self, name: str = "numba-sv"):
         super().__init__(name)
         self._matrix_structures = _MatrixStructureCache()
-        self._layout_cache = _ApplyLayoutCache(_build_statevector_plan)
+        self._layout_cache = _ApplyLayoutCache(_build_unitary_apply_layout)
 
     def _bind_kernels_to_python_workflow(
         self,
@@ -294,7 +294,7 @@ class NumbaSVEngine(NumpySVEngine):
         plans = self._layout_cache.for_targets(
             self._dims,
             targets,
-            operator=operator,
+            batch_columns=operator,
             max_workers=workers,
             force_parallel=policy is not None and policy.kernel_strategy == "threads",
         )
@@ -383,7 +383,7 @@ class NumbaSVEngine(NumpySVEngine):
         force_parallel: bool = False,
     ) -> tuple:
         """Strided-block kernel layout for ``targets`` over the physical dims."""
-        return _build_statevector_plan(
+        return _build_unitary_apply_layout(
             self._dims, targets, max_workers=max_workers, force_parallel=force_parallel
         )
 
@@ -421,7 +421,7 @@ class NumbaDMEngine(NumpyDMEngine):
     def __init__(self, name: str = "numba-dm"):
         super().__init__(name)
         self._superoperators = _SuperoperatorCache()
-        self._layout_cache = _ApplyLayoutCache(_build_density_matrix_plan)
+        self._layout_cache = _ApplyLayoutCache(_build_superoperator_apply_layout)
 
     def _bind_kernels_to_python_workflow(
         self,
@@ -440,7 +440,7 @@ class NumbaDMEngine(NumpyDMEngine):
         plans = self._layout_cache.for_targets(
             self._dims,
             targets,
-            operator=operator,
+            batch_columns=operator,
             max_workers=workers,
             force_parallel=policy is not None and policy.kernel_strategy == "threads",
         )
