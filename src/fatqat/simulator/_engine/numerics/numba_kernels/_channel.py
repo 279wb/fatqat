@@ -1,4 +1,4 @@
-"""Statevector channel arithmetic for compiled Numba trajectories.
+"""Numba Kraus arithmetic and compiled statevector channel application.
 
 The caller selects a channel-table entry and supplies one uniform draw.
 Conditions, draw cursors, and shot sequencing remain in the workflow.
@@ -8,18 +8,93 @@ bit-identical per-seed counts to the NumPy trajectory implementation.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from math import sqrt
 
 import numpy as np
 from numba import njit
 
-from .....noise.nb import _inverse_cdf_pick
+from ._measurement import _inverse_cdf_pick
 from ._apply import (
     _advance_base,
     _apply_resolved_range,
     _classify_matrix,
     _spread_base,
 )
+
+
+def _kraus_stack(kraus_ops: Sequence[np.ndarray]) -> np.ndarray:
+    """Stack a channel's Kraus tuple into one contiguous ``(num, d, d)`` array.
+
+    The kernels below want a single typed buffer rather than a tuple of frozen
+    arrays; ``np.ascontiguousarray`` copies, so the step's read-only operators
+    are never aliased into kernel-writable memory.
+    """
+    return np.ascontiguousarray(kraus_ops, dtype=np.complex128)
+
+
+@njit(cache=True)
+def _jump_branch_kernel(
+    branches: np.ndarray, u: float
+) -> np.ndarray:  # pragma: no cover - compiled by Numba
+    """Draw one quantum-jump branch given uniform ``u`` and return it normalized.
+
+    ``branches[i]`` is the flat state ``K_i |psi>``, already applied by the
+    caller's local-apply primitive. Its squared norm is the branch
+    probability, which CPTP makes sum to ``<psi|psi> = 1``; the weights are
+    divided by their total anyway - matching the NumPy twin's
+    ``rng.choice(num, p=norms / norms.sum())`` - so round-off can never leave
+    ``u`` past the end.
+    """
+    num = branches.shape[0]
+    size = branches.shape[1]
+
+    weights = np.empty(num, dtype=np.float64)
+    total = 0.0
+    for i in range(num):
+        norm_sq = 0.0
+        for j in range(size):
+            amplitude = branches[i, j]
+            norm_sq += amplitude.real * amplitude.real + amplitude.imag * amplitude.imag
+        weights[i] = norm_sq
+        total += norm_sq
+
+    probabilities = np.empty(num, dtype=np.float64)
+    for i in range(num):
+        probabilities[i] = weights[i] / total
+    chosen = _inverse_cdf_pick(probabilities, u)
+
+    norm = sqrt(weights[chosen])
+    out = np.empty(size, dtype=np.complex128)
+    for j in range(size):
+        out[j] = branches[chosen, j] / norm
+    return out
+
+
+@njit(cache=True)
+def _kraus_superop_kernel(
+    stack: np.ndarray,
+) -> np.ndarray:  # pragma: no cover - compiled by Numba
+    """Build ``sum_i kron(K_i, conj(K_i))`` from a ``(num, d, d)`` Kraus stack.
+
+    The one super-operator that reproduces the exact channel
+    ``rho' = sum_i K_i rho K_i^dagger`` when applied to ``vec(rho)`` with the
+    ket group most-significant (see `NumbaDMEngine`). Entries accumulate in
+    Kraus order, so this is ``sum(np.kron(k, k.conj()) for k in kraus_ops)``
+    term for term - up to last-bit round-off, since Numba may contract each
+    multiply-accumulate into an FMA where NumPy rounds the product first.
+    """
+    num = stack.shape[0]
+    d = stack.shape[1]
+    out = np.zeros((d * d, d * d), dtype=np.complex128)
+    for i in range(num):
+        for a in range(d):
+            for b in range(d):
+                ket = stack[i, a, b]
+                for p in range(d):
+                    for q in range(d):
+                        out[a * d + p, b * d + q] += ket * stack[i, p, q].conjugate()
+    return out
 
 
 @njit(cache=True)

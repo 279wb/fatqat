@@ -34,11 +34,10 @@ Kronecker product preserves structure (see below).
   later than the statevector path (`_MIN_SIZE_TO_THREAD_DM`). Reset stays the
   inherited NumPy partial-trace channel.
 
-Noise math lives in ``noise.nb`` (quantum-jump branch selection for the
-statevector, the channel super-operator for the density matrix, readout-confusion
-resampling, and the compiled multi-shot plan flattening); *applying* a Kraus operator
-is a plain local-matrix application on the coset kernels here. This module
-imports ``noise.nb``; the reverse is forced never to happen (see its docstring).
+Kraus arithmetic lives in ``numerics.numba_kernels._channel``. Channel/readout
+packing and classical readout sequencing live in ``workflows.numba_workflow``.
+Numerical modules do not import engines or workflows; compiled callers import
+their numerical functions directly at module scope.
 
 The compiled multi-shot statevector channel path weighs branches the way Aer's trajectory
 sampler does, not the way the NumPy reference does: instead of materializing

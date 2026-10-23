@@ -14,6 +14,45 @@ from ._layouts import _build_measurement_layout
 
 
 @njit(cache=True)
+def _inverse_cdf_pick(
+    probabilities: np.ndarray, u: float
+) -> int:  # pragma: no cover - compiled by Numba
+    """Pick an index from ``probabilities`` by inverse CDF at uniform ``u``.
+
+    Accumulates the cdf, normalizes it by its last entry, and returns the
+    first entry strictly greater than ``u`` - the exact two steps
+    ``rng.choice(n, p=...)`` performs internally, so one ``rng.random()`` fed
+    here consumes the caller's stream identically. A zero-probability entry
+    has a zero-width interval and is therefore never returned. Callers pass
+    the same ``p`` their NumPy counterpart passes to ``rng.choice``, already
+    normalized or not, so the arithmetic matches term for term.
+
+    The normalization makes ``cdf[-1]`` exactly 1.0 and ``u < 1.0``, so the
+    search cannot run off the end; the clamp holds that invariant explicitly
+    because callers use the result to index memory.
+
+    The cdf is never materialized: it is accumulated twice instead, once for
+    its total and once to find the crossing. Same additions and same division
+    per entry, and a cdf is non-decreasing, so this is bit-identical to
+    bisecting the array.
+
+    Basis-index sampling below uses a materialized CDF. Keep the two algorithms
+    separate here to preserve their existing arithmetic and seeded behavior.
+    """
+    n = probabilities.shape[0]
+    total = 0.0
+    for i in range(n):
+        total += probabilities[i]
+
+    running = 0.0
+    for i in range(n):
+        running += probabilities[i]
+        if running / total > u:
+            return i
+    return n - 1
+
+
+@njit(cache=True)
 def _normalized_cdf(
     probabilities: np.ndarray,
 ) -> np.ndarray:  # pragma: no cover - compiled by Numba

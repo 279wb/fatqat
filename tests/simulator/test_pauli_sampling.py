@@ -173,7 +173,8 @@ def test_sampled_unitary_route_reproduces_the_jump_route_exactly(runtime, monkey
     )
     if runtime == "numba":
         monkeypatch.setattr(
-            "fatqat.noise.nb._sampled_unitary_branches", lambda _kraus_ops: None
+            "fatqat.simulator._engine.workflows.numba_workflow.trajectories._sampled_unitary_branches",
+            lambda _kraus_ops: None,
         )
     jumped = _counts(runtime, noise, program)
 

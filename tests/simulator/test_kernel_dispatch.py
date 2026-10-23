@@ -38,7 +38,10 @@ from fatqat.simulator._engine.numerics.numba_kernels._matrix_cache import (
 from fatqat.simulator._engine.engines.numpy_engine import NumpySVEngine
 from fatqat.noise import Depolarizing
 from fatqat.noise.catalog import depolarizing_rule
-from fatqat.noise.nb import _kraus_stack, _kraus_superop_kernel
+from fatqat.simulator._engine.numerics.numba_kernels._channel import (
+    _kraus_stack,
+    _kraus_superop_kernel,
+)
 
 # pylint: enable=wrong-import-position
 

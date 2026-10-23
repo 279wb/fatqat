@@ -14,7 +14,7 @@ from ....._backends.steps import (
     BuiltinKernelKey,
     ResolvedStep,
 )
-from .....noise.nb import _kraus_stack, _kraus_superop_kernel
+from ._channel import _kraus_stack, _kraus_superop_kernel
 from ._apply import _DENSE, _DIAGONAL, _PERMUTATION, _classify_matrix
 
 # Declared structure per canonical gate identity: the key-to-kernel table.
@@ -165,7 +165,7 @@ class _SuperoperatorCache:
         product preserves structure, so a kernel_key declared ``_DENSE`` skips
         the scan and every other gate takes one `_classify_matrix` scan of the
         super-operator. A channel's ``sum_i kron(K_i, conj(K_i))``
-        (`noise.nb._kraus_superop_kernel`) carries no key and is always
+        (`_channel._kraus_superop_kernel`) carries no key and is always
         scanned - which is what lets a diagonal channel (phase damping) reach
         the diagonal kernel.
 

@@ -19,17 +19,14 @@ from ....._backends.steps import (
     ResetStep,
     ResolvedStep,
 )
-from .....noise.nb import (
-    _compile_channel_table,
-    _compile_readout_table,
-    _report_digit_kernel,
-)
+from .....noise.base import _sampled_unitary_branches
+from ._reporting import _report_digit_kernel
 from ...._execution_contract import (
     _ExecutionContext as ExecutionContext,
     _InitialEvolutionState as InitialEvolutionState,
 )
 from ...numerics.numba_kernels._apply import _DENSE, _apply_resolved_range
-from ...numerics.numba_kernels._channel import _apply_channel_step
+from ...numerics.numba_kernels._channel import _apply_channel_step, _kraus_stack
 from ...numerics.numba_kernels._measurement import (
     _sample_index_kernel,
     _sv_probabilities_kernel,
@@ -80,6 +77,155 @@ def _plan_compilable(plan: Sequence[ResolvedStep]) -> bool:
     )
 
 
+def _compile_channel_table(entries: Sequence[tuple]) -> tuple:
+    """Flatten a plan's channel occurrences for the compiled multi-shot kernel.
+
+    Each entry is ``(kraus_ops, offsets, comp_strides, comp_dims)``: the
+    step's resolved Kraus tuple plus the coset layout its target tuple got
+    from the caller's apply-plan cache. Channels keep their own flat pools
+    (they are the only steps carrying a stack of matrices rather than one), so
+    the returned arrays are self-contained and independent of the gate table.
+
+    Alongside each Kraus operator this precomputes ``M_i = K_i^dagger K_i``
+    (same ``(num, d, d)`` layout, indexed by the same per-channel pointer),
+    the local operator the compiled kernel needs for the branch weight: the
+    quantum-jump probability ``<psi|K_i^dagger K_i|psi>`` is ``Tr(M_i rho_T)``
+    over the target subsystems' reduced density matrix, so the kernel weighs
+    every branch from one ``O(size)`` reduced density matrix and these ``d x d``
+    operators, never by materializing and norming ``num`` full branches.
+
+    A channel of scaled unitaries (`_sampled_unitary_branches`) needs neither.
+    Its branch probabilities go into ``cdf_flat`` already accumulated and
+    normalized, its operators into ``kra_flat`` already divided by their own
+    scale, and ``ident_flat`` marks the branches that are the identity - so
+    the kernel's per-occurrence work is a search, and usually nothing else.
+    ``cdf_ptr`` is the channel's offset into ``cdf_flat`` and ``ident_flat``
+    alike, or ``-1`` for a channel weighed against the state. ``mmat_diag``
+    marks a channel whose ``M_i`` are all diagonal, weighable from the target
+    marginal alone.
+
+    ``mmat_flat`` is taken of whatever ``kra_flat`` holds, so
+    ``M_i = K_i^dagger K_i`` is true of the stored operators either way.
+
+    Returns the kernel's positional channel arrays: per-channel pointers and
+    flags, then the pools themselves (the Kraus stack, the ``M_i`` stack, and
+    the offset / complement / cdf / identity backings).
+    """
+    kra_ptr: list[int] = []
+    num_kraus: list[int] = []
+    local_dim: list[int] = []
+    off_ptr: list[int] = []
+    comp_ptr: list[int] = []
+    comp_len: list[int] = []
+    cdf_ptr: list[int] = []
+    mmat_diag: list[int] = []
+    kra_flat: list[complex] = []
+    mmat_flat: list[complex] = []
+    off_flat: list[int] = []
+    comp_stride_flat: list[int] = []
+    comp_dim_flat: list[int] = []
+    cdf_flat: list[float] = []
+    ident_flat: list[int] = []
+
+    for kraus_ops, offsets, comp_strides, comp_dims in entries:
+        branches = _sampled_unitary_branches(tuple(kraus_ops))
+        if branches is None:
+            cdf_ptr.append(-1)
+            stack = _kraus_stack(kraus_ops)
+        else:
+            probabilities, unitaries, identities = branches
+            cdf_ptr.append(len(cdf_flat))
+            # Same running sums and division `_inverse_cdf_pick` would do per
+            # draw, so a search over this finds the index it would have.
+            cumulative = np.cumsum(probabilities)
+            cdf_flat.extend(float(c) for c in cumulative / cumulative[-1])
+            ident_flat.extend(int(flag) for flag in identities)
+            stack = _kraus_stack(unitaries)
+        assert (
+            stack.shape[1] == offsets.shape[0]
+        ), "Kraus dimension must equal the coset layout's local dimension"
+        kra_ptr.append(len(kra_flat))
+        num_kraus.append(stack.shape[0])
+        local_dim.append(stack.shape[1])
+        kra_flat.extend(stack.ravel().tolist())
+        diagonal_only = True
+        for kraus in stack:
+            mmat = kraus.conj().T @ kraus
+            mmat_flat.extend(mmat.ravel().tolist())
+            # Exact zeros, like `_classify_matrix`: a merely tiny off-diagonal
+            # entry is a real one and must take the general path.
+            diagonal_only = diagonal_only and not np.any(
+                mmat - np.diag(np.diagonal(mmat))
+            )
+        mmat_diag.append(int(diagonal_only))
+        off_ptr.append(len(off_flat))
+        off_flat.extend(int(o) for o in offsets)
+        comp_ptr.append(len(comp_stride_flat))
+        comp_len.append(comp_strides.shape[0])
+        comp_stride_flat.extend(int(s) for s in comp_strides)
+        comp_dim_flat.extend(int(d) for d in comp_dims)
+
+    def i64(values):
+        return np.asarray(values, dtype=np.int64)
+
+    return (
+        i64(kra_ptr),
+        i64(num_kraus),
+        i64(local_dim),
+        i64(off_ptr),
+        i64(comp_ptr),
+        i64(comp_len),
+        i64(cdf_ptr),
+        i64(mmat_diag),
+        np.asarray(kra_flat, dtype=np.complex128),
+        np.asarray(mmat_flat, dtype=np.complex128),
+        i64(off_flat),
+        i64(comp_stride_flat),
+        i64(comp_dim_flat),
+        np.asarray(cdf_flat, dtype=np.float64),
+        i64(ident_flat),
+    )
+
+
+def _compile_readout_table(entries: Sequence[tuple]) -> tuple:
+    """Flatten readout confusion matrices for the compiled multi-shot kernel.
+
+    Each entry is one measurement step's ``(num_subsystems, confusions)``,
+    where ``confusions`` is the step's per-subsystem tuple (entries may be
+    ``None``) or ``None`` for an error-free measurement. Entries must arrive in
+    the order the caller flattened its measured subsystems, because the
+    returned pointers are indexed by that same flat subsystem position.
+
+    A confusion's side length is not stored: lowering validates each matrix
+    against its measured subsystem's dimension, so the kernel reads it from
+    the measurement table's ``me_dim``.
+
+    Returns ``(conf_ptr, conf_flat)``: ``conf_ptr[k]`` is where subsystem
+    ``k``'s row-major matrix starts in ``conf_flat``, or ``-1`` when that
+    subsystem reports without error (the common case, which stores nothing).
+    """
+    conf_ptr: list[int] = []
+    conf_flat: list[float] = []
+    for num_subsystems, confusions in entries:
+        if confusions is None:
+            conf_ptr.extend([-1] * num_subsystems)
+            continue
+        assert (
+            len(confusions) == num_subsystems
+        ), "confusions must align with the step's measured subsystems"
+        for confusion in confusions:
+            if confusion is None:
+                conf_ptr.append(-1)
+                continue
+            matrix = np.ascontiguousarray(confusion, dtype=np.float64)
+            conf_ptr.append(len(conf_flat))
+            conf_flat.extend(matrix.ravel().tolist())
+    return (
+        np.asarray(conf_ptr, dtype=np.int64),
+        np.asarray(conf_flat, dtype=np.float64),
+    )
+
+
 def _compile_dynamic_plan(
     plan: Sequence[ResolvedStep],
     dims: tuple[int, ...],
@@ -90,7 +236,7 @@ def _compile_dynamic_plan(
 
     Uses the supplied numerical layout builder; measurement/reset carry their
     subsystem strides and dims for in-kernel collapse and reset-shift, while
-    the two noise payloads go to ``noise.nb``: a channel hands its Kraus
+    the two noise payloads are packed here: a channel hands its Kraus
     stack plus that same layout to `_compile_channel_table`, and each
     measurement hands its confusion tuple to `_compile_readout_table`, whose
     pointers are indexed by the measured-subsystem position built here.
@@ -452,7 +598,7 @@ def _run_sv_trajectories(
     # reset flat backing
     rs_stride,  # flat stride of each reset subsystem
     rs_dim,  # dimension of each reset subsystem
-    # channel table (one entry per ApplyChannelStep), built by `noise.nb`
+    # channel table (one entry per ApplyChannelStep), built by `_compile_channel_table`
     ch_kra_ptr,  # start of this channel's Kraus stack in ch_kra_flat
     ch_num_kraus,  # number of Kraus operators in the stack
     ch_dim,  # local dimension d (each operator is d*d, with d offsets)
