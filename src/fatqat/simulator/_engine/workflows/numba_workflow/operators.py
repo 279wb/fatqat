@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import numpy as np
 from numba import njit, prange
 
@@ -15,6 +17,42 @@ from ...numerics.numba_kernels._operator import (
     _apply_sparse_columns,
 )
 from ...numerics.numba_kernels._layouts import _build_apply_layout
+
+
+class _NumbaOperatorExecution(NamedTuple):
+    """Packed operator plan and launch dimensions; only arrays enter Numba."""
+
+    packed_plan: tuple[np.ndarray, ...] | None
+    scratch_rows: int
+    n_columns: int
+    n_chunks: int
+
+
+def _execute_operator_plan(
+    state: np.ndarray, payload: _NumbaOperatorExecution
+) -> np.ndarray:
+    """Run a packed operator plan on initialized storage in the caller's scope."""
+    if payload.packed_plan is not None:
+        operator = np.ascontiguousarray(state, dtype=np.complex128)
+        flat = operator.reshape(-1)
+        if payload.n_chunks > 1:
+            _run_operator_plan_parallel(
+                flat,
+                payload.n_columns,
+                payload.packed_plan,
+                payload.scratch_rows,
+                payload.n_chunks,
+            )
+        else:
+            _run_operator_plan_serial(
+                flat,
+                payload.n_columns,
+                payload.packed_plan,
+                payload.scratch_rows,
+            )
+        return flat.reshape(operator.shape)
+    return state
+
 
 # --- compiled whole-plan operator kernels (one parallel region) ---
 #

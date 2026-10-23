@@ -86,7 +86,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from math import prod
 from functools import partial
-from typing import NamedTuple
 
 import numpy as np
 
@@ -163,8 +162,8 @@ from ..workflows.python_workflow import _MeasurementKernels, _PythonExecution
 from ..workflows.numba_workflow.operators import (
     _operator_chunks,
     _pack_operator_plan,
-    _run_operator_plan_parallel,
-    _run_operator_plan_serial,
+    _NumbaOperatorExecution,
+    _execute_operator_plan,
 )
 from ..workflows.numba_workflow.trajectories import (
     _NumbaTrajectoryExecution,
@@ -514,17 +513,6 @@ class NumbaDMEngine(_NdarrayEngine):
 # never-targeted subsystem prepended to the dims.
 
 
-class _NumbaOperatorExecution(NamedTuple):
-    """Host-side operator preparation; only the packed arrays enter Numba.
-    and exports the requested operator.
-    """
-
-    packed_plan: tuple[np.ndarray, ...] | None
-    scratch_rows: int
-    n_columns: int
-    n_chunks: int
-
-
 class _NumbaOperatorRunMixin:
     """Compiled whole-plan execution for the Numba operator engines.
 
@@ -617,25 +605,7 @@ class _NumbaOperatorRunMixin:
                 self._n_clbits,
                 initial_state=initial_state,
             )
-            if payload.packed_plan is not None:
-                operator = np.ascontiguousarray(self.state, dtype=np.complex128)
-                flat = operator.reshape(-1)
-                if payload.n_chunks > 1:
-                    _run_operator_plan_parallel(
-                        flat,
-                        payload.n_columns,
-                        payload.packed_plan,
-                        payload.scratch_rows,
-                        payload.n_chunks,
-                    )
-                else:
-                    _run_operator_plan_serial(
-                        flat,
-                        payload.n_columns,
-                        payload.packed_plan,
-                        payload.scratch_rows,
-                    )
-                self._state = flat.reshape(operator.shape)
+            self._state = _execute_operator_plan(self.state, payload)
             state = self.export_state() if context.request.final_state else None
             return RawResult(state=state)
 
