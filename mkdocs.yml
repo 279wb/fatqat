@@ -172,7 +172,9 @@ nav:
       - Build programs:
           - Program: api/program.md
           - LogicalProgram: api/logical-program.md
-          - Compiler: api/compiler.md
+          - Compiler:
+              - api/compiler.md
+              - SC target: api/sc-target.md
           - Registers: api/registers.md
           - Operations:
               - api/operations.md
@@ -222,3 +224,6 @@ nav:
       - Errors and stability:
           - Exceptions: api/exceptions.md
           - Experimental APIs: api/experimental.md
+  - How to contribute:
+      - Contributing in the AI era: contributing/contributing-in-the-ai-era.md
+      - How to work on an issue: contributing/how-to-work-on-an-issue.md

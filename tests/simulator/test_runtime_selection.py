@@ -106,6 +106,10 @@ def _dynamic_program():
 
 def test_serial_and_threaded_compiled_shots_are_identical():
     pytest.importorskip("numba")
+    from fatqat.simulator._engine.engines import numba as nb
+
+    if nb._MAX_THREADS < 2:
+        pytest.skip("Numba exposes no parallel thread capacity")
 
     def counts_for(shot_parallelism, max_workers):
         return (
@@ -172,15 +176,18 @@ def test_numba_kernel_thread_scope_expands_and_restores(fail, monkeypatch):
     expected = 2
     numba.set_num_threads(1)
     before = numba.get_num_threads()
-    original = nb.NumbaSVEngine.apply
+    original = nb._apply_matrix_statevector
+    called = False
 
-    def probe(self, *args, **kwargs):
+    def probe(*args, **kwargs):
+        nonlocal called
+        called = True
         assert numba.get_num_threads() == expected
         if fail:
             raise RuntimeError("numeric failure")
-        return original(self, *args, **kwargs)
+        return original(*args, **kwargs)
 
-    monkeypatch.setattr(nb.NumbaSVEngine, "apply", probe)
+    monkeypatch.setattr(nb, "_apply_matrix_statevector", probe)
     simulation_config = {
         "seed": 7,
         "shot_parallelism": "serial",
@@ -202,6 +209,7 @@ def test_numba_kernel_thread_scope_expands_and_restores(fail, monkeypatch):
         else:
             job.result()
 
+        assert called
         assert numba.get_num_threads() == before
     finally:
         numba.set_num_threads(original_limit)

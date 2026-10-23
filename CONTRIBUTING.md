@@ -5,6 +5,9 @@ documented in the [README](README.md#development). Contributors should discuss
 substantial features or architectural changes with the maintainers before
 investing in a large implementation.
 
+For a practical introduction to asking useful questions, reviewing changes,
+and contributing, read [Contributing in the AI era](https://fatqat.readthedocs.io/en/latest/contributing/contributing-in-the-ai-era/).
+
 ## AI tools usage policy
 
 fatqat welcomes the use of AI tools to improve efficiency and the quality of
