@@ -5,18 +5,18 @@ numerical resources without retaining an engine or an evolving state. Target
 layouts are complete before execution and are only read by these operations.
 """
 
+from __future__ import annotations
+
 from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from ....._backends.steps import ApplyChannelStep, ApplyMatrixStep
 from ._apply import _apply_matrix, _classify_matrix
-from ._channel import _jump_branch_kernel
-from ..numpy_kernels._channel import _ChannelRouteCache, _sample_unitary
-from ._matrix_cache import (
-    _MatrixStructureCache,
-    _SuperoperatorCache,
-)
+
+if TYPE_CHECKING:
+    from ._matrix_cache import _MatrixStructureCache, _SuperoperatorCache
 
 
 def _apply_matrix_statevector(
@@ -68,52 +68,3 @@ def _apply_unclassified_matrix(
     targets = tuple(targets)
     plan = plans[targets]
     return _apply_matrix(state, matrix, plan, code, columns, values)
-
-
-def _apply_channel_statevector(
-    state: np.ndarray,
-    step: ApplyChannelStep,
-    dims: Sequence[int],
-    rng: np.random.Generator,
-    *,
-    routes: _ChannelRouteCache,
-    plans: Mapping[tuple[int, ...], tuple],
-) -> np.ndarray:
-    """Sample a fixed unitary branch or a state-dependent Kraus branch.
-
-    General branches use separate copies because the kernels mutate their input.
-    The compiled branch sampler retains the existing weights and draw sequence.
-    """
-    # pylint: disable-next=fixme
-    # TODO: Benchmark per-channel-step caching of branch matrix classification
-    # (including sampled-unitary matrices) before adopting it. Verify seeded
-    # results and cache lifetimes; keep state-dependent Kraus probabilities per shot.
-    route = routes.resolve(step)
-    if route is not None:
-        matrix = _sample_unitary(route, rng)
-        if matrix is None:
-            return state
-        return _apply_unclassified_matrix(
-            state, matrix, step.target_indices, plans=plans
-        )
-    branches = np.empty((len(step.kraus_ops), state.shape[0]), dtype=np.complex128)
-    for i, kraus in enumerate(step.kraus_ops):
-        branches[i] = _apply_unclassified_matrix(
-            state.copy(), kraus, step.target_indices, plans=plans
-        )
-    return _jump_branch_kernel(branches, float(rng.random()))
-
-
-def _apply_channel_density_matrix(
-    state: np.ndarray,
-    step: ApplyChannelStep,
-    dims: Sequence[int],
-    rng: np.random.Generator,
-    *,
-    superoperators: _SuperoperatorCache,
-    plans: Mapping[tuple[int, ...], tuple],
-) -> np.ndarray:
-    """Apply the exact channel superoperator without consuming randomness."""
-    return _apply_superoperator_to_state(
-        state, step, dims, superoperators=superoperators, plans=plans
-    )

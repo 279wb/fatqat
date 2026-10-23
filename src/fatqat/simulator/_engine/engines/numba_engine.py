@@ -143,9 +143,11 @@ from ..numerics.numba_kernels._layouts import (
 )
 from ..numerics.numba_kernels._apply_matrix_to_state import (
     _apply_matrix_statevector,
+    _apply_superoperator_to_state,
+)
+from ..numerics.numba_kernels._channel import (
     _apply_channel_statevector,
     _apply_channel_density_matrix,
-    _apply_superoperator_to_state,
 )
 from ..numerics.numpy_kernels._reset import _reset_density_matrix, _reset_superoperator
 from .ndarray_engine import _NdarrayEngine
