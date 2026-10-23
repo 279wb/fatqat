@@ -5,8 +5,7 @@ numerical resources without retaining an engine or an evolving state. Target
 layouts are complete before execution and are only read by these operations.
 """
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
-from math import prod
+from collections.abc import Mapping, Sequence
 
 import numpy as np
 
@@ -17,106 +16,7 @@ from ..numpy._state import _ChannelRouteCache, _sample_unitary
 from ._preparation import (
     _MatrixStructureCache,
     _SuperoperatorCache,
-    _compute_apply_plan,
-    _MAX_THREADS,
-    _MIN_SIZE_TO_THREAD_DM,
 )
-
-
-def _build_unitary_apply_layout(
-    dims: Sequence[int],
-    targets: Sequence[int],
-    *,
-    batch_columns: bool = False,
-    max_workers: int = _MAX_THREADS,
-    force_parallel: bool = False,
-) -> tuple:
-    """Build a matrix-application layout over the physical dimensions.
-
-    ``batch_columns`` adds a never-targeted column dimension for a unitary
-    buffer, so the matrix acts independently on every column.
-    """
-    if batch_columns:
-        dims = (prod(dims),) + tuple(dims)
-        targets = tuple(1 + target for target in targets)
-    return _compute_apply_plan(
-        dims, targets, max_workers=max_workers, force_parallel=force_parallel
-    )
-
-
-def _build_superoperator_apply_layout(
-    dims: Sequence[int],
-    targets: Sequence[int],
-    *,
-    batch_columns: bool = False,
-    max_workers: int = _MAX_THREADS,
-    force_parallel: bool = False,
-) -> tuple:
-    """Build the ket-first local layout over doubled bra/ket dimensions.
-
-    Ket targets precede bra targets so local indices match kron(M, conj(M)).
-    ``batch_columns`` adds a never-targeted column dimension for an accumulated
-    superoperator buffer.
-    """
-    dims = tuple(dims)
-    n = len(dims)
-    shift = int(batch_columns)
-    row_dims = dims + dims
-    if batch_columns:
-        row_dims = (prod(dims) ** 2,) + row_dims
-    super_targets = tuple(shift + n + t for t in targets) + tuple(
-        shift + t for t in targets
-    )
-    return _compute_apply_plan(
-        row_dims,
-        super_targets,
-        _MIN_SIZE_TO_THREAD_DM,
-        max_workers=max_workers,
-        force_parallel=force_parallel,
-    )
-
-
-class _ApplyLayoutCache:
-    """Reuse numerical layouts across Python executions with matching inputs.
-
-    Retain only the latest binding's layouts, without retaining steps or states.
-    Each binding gets a separate target mapping; its layout arrays are shared
-    and treated as immutable by the numerical functions. Pruning this cache
-    cannot change a previously bound execution, and execution never restores
-    or updates the cache.
-    """
-
-    def __init__(self, build_layout: Callable[..., tuple]):
-        self._build_layout = build_layout
-        self._entries: dict[tuple, tuple] = {}
-
-    def for_targets(
-        self,
-        dims: tuple[int, ...],
-        targets: Iterable[tuple[int, ...]],
-        *,
-        batch_columns: bool,
-        max_workers: int,
-        force_parallel: bool,
-    ) -> dict[tuple[int, ...], tuple]:
-        """Reuse matching layouts and build the missing ones for this binding."""
-        entries = {}
-        plans = {}
-        for target in targets:
-            key = (dims, target, batch_columns, max_workers, force_parallel)
-            layout = self._entries.get(key)
-            if layout is None:
-                layout = self._build_layout(
-                    dims,
-                    target,
-                    batch_columns=batch_columns,
-                    max_workers=max_workers,
-                    force_parallel=force_parallel,
-                )
-            entries[key] = layout
-            plans[target] = layout
-        self._entries = entries
-        return plans
 
 
 def _apply_matrix_statevector(

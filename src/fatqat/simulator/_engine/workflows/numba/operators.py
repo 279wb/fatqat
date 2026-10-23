@@ -14,7 +14,7 @@ from ...numerics.numba._operator import (
     _apply_permutation_columns,
     _apply_sparse_columns,
 )
-from ...numerics.numba._preparation import _compute_apply_plan
+from ...numerics.numba._layouts import _compute_apply_plan
 
 # --- compiled whole-plan operator kernels (one parallel region) ---
 #

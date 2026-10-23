@@ -8,7 +8,7 @@ from math import sqrt
 import numpy as np
 from numba import njit
 
-from ._preparation import _measured_layout
+from ._layouts import _measured_layout
 
 # --- shared sampling ---
 

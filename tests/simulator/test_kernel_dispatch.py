@@ -318,7 +318,7 @@ def test_plan_chunks_floor_scales_with_thread_count():
     # The parallel floor is per-thread (`_MAX_THREADS * _GRAIN_TO_THREAD`), so a
     # state stays serial just below it and splits across threads at it - the
     # absolute crossover tracks the core count, not a fixed size.
-    from fatqat.simulator._engine.numerics.numba._preparation import (
+    from fatqat.simulator._engine.numerics.numba._layouts import (
         _GRAIN_TO_THREAD,
         _MAX_THREADS,
         _MIN_SIZE_TO_THREAD,
@@ -335,7 +335,7 @@ def test_coset_chunking_is_bit_identical_across_chunk_counts():
     # The floor only ever changes the chunk COUNT; disjoint cosets make the
     # result independent of it, which is why moving the floor never changes an
     # amplitude. A dense gate applied as one chunk equals it applied as many.
-    from fatqat.simulator._engine.numerics.numba._preparation import _compute_apply_plan
+    from fatqat.simulator._engine.numerics.numba._layouts import _compute_apply_plan
     from fatqat.simulator._engine.numerics.numba._apply import (
         _apply_resolved_parallel,
         _apply_resolved_serial,

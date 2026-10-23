@@ -310,8 +310,8 @@ def test_pauli_sampling_does_not_change_the_per_shot_draw_budget():
     pytest.importorskip("numba")
     from functools import partial
 
+    from fatqat.simulator._engine.numerics.numba._layouts import _compute_apply_plan
     from fatqat.simulator._engine.numerics.numba._preparation import (
-        _compute_apply_plan,
         _MatrixStructureCache,
     )
     from fatqat.simulator._engine.workflows.numba.trajectories import (

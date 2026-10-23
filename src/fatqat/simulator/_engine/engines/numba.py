@@ -135,16 +135,18 @@ from ..numerics.numba._measurement import (
 from ..numerics.numba._preparation import (
     _MatrixStructureCache,
     _SuperoperatorCache,
+)
+from ..numerics.numba._layouts import (
     _MAX_THREADS,
+    _ApplyLayoutCache,
+    _build_unitary_apply_layout,
+    _build_superoperator_apply_layout,
 )
 from ..numerics.numba._apply_matrix_to_state import (
-    _ApplyLayoutCache,
     _apply_matrix_statevector,
     _apply_channel_statevector,
     _apply_channel_density_matrix,
     _apply_superoperator_to_state,
-    _build_unitary_apply_layout,
-    _build_superoperator_apply_layout,
 )
 from ..numerics.numpy._state import _reset_density_matrix, _reset_superoperator
 from .numpy import (
