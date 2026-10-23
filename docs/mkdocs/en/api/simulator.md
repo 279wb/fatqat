@@ -89,11 +89,12 @@ values are case-sensitive.
 
 | Key | Default | Accepted values and effect |
 | --- | --- | --- |
-| `seed` | `None` | Use a non-negative `int` or `None`; booleans are rejected. It controls measurement, reset, channel, loss, and readout sampling. A negative value is rejected when execution starts, so [`fatqat.Job.result`][fatqat.Job.result] raises `ValueError`. |
+| `seed` | `None` | Use a non-negative `int` or `None`; booleans are rejected. It controls measurement, reset, channel, loss, and readout sampling. A negative value fails when execution starts and follows `error_handling`. |
 | `shot_parallelism` | `"auto"` | `"auto"`, `"serial"`, `"threads"`, or `"processes"`. Explicit parallel modes require an eligible counts-only, per-shot run with at least two shots and workers. Threads require a compatible Numba statevector run. |
 | `kernel_parallelism` | `"auto"` | `"auto"`, `"serial"`, or `"threads"`. Threads require Numba and cannot be requested together with parallel shots. |
 | `max_workers` | `None` | `None` or a positive `int`. It caps the selected parallel mode; `1` conflicts with an explicitly parallel request. |
-| `fusion` | `False` | A `bool`. `True` combines compatible adjacent operations and is supported by Numba for `density_matrix`, `unitary`, and `superop`. |
+| `error_handling` | `"raise"` | `"raise"` or `"capture"`; see the error-handling contract in [`Simulator.run`][fatqat.simulator.Simulator.run]. |
+| `fusion` | `False` | A `bool`. `True` combines compatible adjacent operations and is supported by Numba for `unitary` and `superop`. Statevector and density-matrix evolution do not support fusion. |
 
 Automatic selection uses at most one parallel axis. An explicit unsupported
 choice raises an error instead of falling back. A run is eligible for explicit
@@ -158,8 +159,8 @@ The concrete final-state field is named `statevector`, `density_matrix`,
 reading a field that may not have been requested.
 
 `run()` returns an eager [`Job`][fatqat.Job]. Program and option validation
-errors normally raise directly. Errors during execution or result assembly are
-stored on the job and re-raised by [`fatqat.Job.result`][fatqat.Job.result]. See
+errors raise directly. Execution and result-assembly errors follow
+`error_handling`, as specified in [`Simulator.run`][fatqat.simulator.Simulator.run]. See
 [Result](result.md) for available fields, accessors, count ordering, and
 state-axis metadata.
 
@@ -197,7 +198,7 @@ parameter batch and returns one eager job containing an ordered
 each row then only re-realizes the matrices of its parameter-holding gates
 before execution, so layout resolution, implementation selection, and noise
 matching are not repeated per row. Batch and row validation errors raise
-directly; an execution failure produces a failed sweep job, and no partial
+directly; execution errors follow `error_handling`, and no partial
 result list is returned.
 It reuses a supplied seed for every row, so sampled errors can be correlated.
 See [Simulate a quantum program](../guide/simulation.md) for a guided example.

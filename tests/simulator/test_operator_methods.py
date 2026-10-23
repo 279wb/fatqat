@@ -342,7 +342,6 @@ def test_nonadjacent_channel_and_superop_use_public_target_positions(runtime, fu
         .run(
             program,
             initial_state=rho,
-            simulation_config=config,
             result_config={"counts": False, "final_state": True},
         )
         .result()
@@ -381,7 +380,7 @@ def test_numpy_and_numba_runtimes_agree(method):
 
 def _numba_engines():
     pytest.importorskip("numba")
-    from fatqat.simulator._engine import nb
+    from fatqat.simulator._engine.engines import numba_engine as nb
 
     return nb
 
@@ -418,10 +417,10 @@ def test_column_kernel_matches_the_per_gate_kernels_bit_for_bit(method, no_fusio
     for step in nb._fuse_gate_channels(plan) if method == "superop" else plan:
         if isinstance(step, nb.ApplyMatrixStep):
             engine.apply(step)
-        elif isinstance(step, nb.ApplyChannelStep):
-            engine.apply_channel(step, generator)
         else:
-            engine.reset_subsystems(step.reset_indices, generator)
+            # This program contains gates and noise channels, with no resets.
+            assert isinstance(step, nb.ApplyChannelStep)
+            engine.apply_channel(step, generator)
 
     assert np.array_equal(fused, engine.export_state())
 
@@ -526,6 +525,8 @@ def test_gate_fusion_collapses_whole_runs(name, expected_steps):
 def test_gate_fusion_keeps_a_diagonal_run_diagonal():
     """A run of phase gates stays on the in-place diagonal kernel, at any width."""
     nb = _numba_engines()
+    from fatqat.simulator._engine.numerics.numba_kernels._apply import _DIAGONAL
+
     backend = Simulator("unitary", runtime="numba")
     program = Program(4)
     for target in range(4):
@@ -537,7 +538,7 @@ def test_gate_fusion_keeps_a_diagonal_run_diagonal():
         engine._operator_payloads(plan), engine._operator_row_dims()
     )
     assert len(fused) == 1
-    assert fused[0][1] == nb._DIAGONAL
+    assert fused[0][1] == _DIAGONAL
     assert fused[0][5] == (0, 1, 2, 3)  # one pass over all four subsystems
 
 
@@ -634,7 +635,9 @@ def test_empty_program_returns_the_identity(method, runtime):
 
 def test_fused_superop_covers_every_structure_code():
     """Diagonal, permutation, dense, and CSR-sparse steps in one packed plan."""
-    nb = _numba_engines()
+    _numba_engines()
+    from fatqat.simulator._engine.workflows.numba_workflow import operators
+
     program = Program(2)
     program.add(ops.RZ(0.4), 0)  # diagonal super-operator
     program.add(ops.X, 1)  # permutation super-operator
@@ -647,10 +650,15 @@ def test_fused_superop_covers_every_structure_code():
     plan, _ = backend._lower_program(program)
     backend.run(program).result()  # populates the engine's resolution caches
     codes = {
-        payload[1] if payload[4] is None else nb._SPARSE
+        payload[1] if payload[4] is None else operators._SPARSE
         for payload in backend._engine._operator_payloads(plan)
     }
-    assert {nb._DENSE, nb._DIAGONAL, nb._PERMUTATION, nb._SPARSE} <= codes
+    assert {
+        operators._DENSE,
+        operators._DIAGONAL,
+        operators._PERMUTATION,
+        operators._SPARSE,
+    } <= codes
 
     assert np.allclose(
         backend.run(program).result().get_superop(),

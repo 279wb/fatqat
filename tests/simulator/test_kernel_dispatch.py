@@ -1,7 +1,12 @@
 """Key-driven numba kernel dispatch: spec/content agreement and parity."""
 
+import gc
+import weakref
+
 import numpy as np
 import pytest
+
+from fatqat.simulator._engine._execution_policy import _select_execution_path
 
 import fatqat as fq
 import fatqat.operations as ops
@@ -9,6 +14,7 @@ from fatqat.simulator import Simulator
 from fatqat._backends.steps import ApplyChannelStep, ApplyMatrixStep, BuiltinKernelKey
 from fatqat.implementation import default_matrix_implementation_map
 from fatqat.simulator._execution_contract import (
+    _ResultRequest,
     _ExecutionContext,
     _InitialEvolutionState,
 )
@@ -17,18 +23,25 @@ from fatqat.simulator._engine._execution_policy import _ExecutionPolicy
 numba = pytest.importorskip("numba")
 
 # pylint: disable=wrong-import-position  # these need the importorskip above
-from fatqat.simulator._engine.nb import (
-    _classify_matrix,
-    _DENSE,
+from fatqat.simulator._engine.engines.numba_engine import (
     _fuse_gate_channels,
-    _KERNEL_SPECS,
-    _superop_csr,
     NumbaSVEngine,
 )
-from fatqat.simulator._engine.np import NumpySVEngine
+from fatqat.simulator._engine.numerics.numba_kernels._apply import (
+    _DENSE,
+    _classify_matrix,
+)
+from fatqat.simulator._engine.numerics.numba_kernels._matrix_cache import (
+    _KERNEL_SPECS,
+    _superop_csr,
+)
+from fatqat.simulator._engine.engines.numpy_engine import NumpySVEngine
 from fatqat.noise import Depolarizing
 from fatqat.noise.catalog import depolarizing_rule
-from fatqat.noise.nb import _kraus_stack, _kraus_superop_kernel
+from fatqat.simulator._engine.numerics.numba_kernels._channel import (
+    _kraus_stack,
+    _kraus_superop_kernel,
+)
 
 # pylint: enable=wrong-import-position
 
@@ -121,8 +134,10 @@ def _counts(engine_cls, plan, dims, n_clbits, shots, seed, request):
         shots=shots,
         seed=seed,
     )
-    execution_path = simulator._select_execution_path(
-        plan, initial_state=_InitialEvolutionState()
+    execution_path = _select_execution_path(
+        plan,
+        quantum_capabilities=simulator.capabilities.quantum,
+        initial_state=_InitialEvolutionState(),
     )
     policy = _ExecutionPolicy(
         execution_path=execution_path,
@@ -137,7 +152,7 @@ def _counts(engine_cls, plan, dims, n_clbits, shots, seed, request):
         n_clbits=context.n_clbits,
         policy=policy,
     )
-    raw = simulator.execute_local(
+    raw = simulator.execute_in_process(
         context,
         payload,
         policy,
@@ -149,7 +164,7 @@ def _counts(engine_cls, plan, dims, n_clbits, shots, seed, request):
 def _plan_and_request(program):
     backend = Simulator()
     plan, _facts = backend._lower_program(program)
-    return plan, backend._request_cls(counts=True, statevector=False)
+    return plan, _ResultRequest(counts=True, final_state=False)
 
 
 def test_keyed_dispatch_matches_numpy_across_structure_classes():
@@ -219,10 +234,8 @@ def test_dense_declaration_stays_correct_at_special_parameters():
     assert np.allclose(simulator.export_state(), [0.0, -1.0j])
 
 
-def test_fallback_path_matches_the_standard_path():
-    # apply(step) (standard, key-aware, cached) and _apply_local (matrix-only
-    # fallback used by reset shifts and Kraus branches) must produce the same
-    # state through the same resolved kernels.
+def test_deterministic_channel_matches_equivalent_gate():
+    # A gate and a deterministic channel implementing the same matrix agree.
     matrix = np.array([[0, 1], [1, 0]], dtype=complex)
     standard = NumbaSVEngine()
     standard.initialize((2, 2), 0)
@@ -233,24 +246,34 @@ def test_fallback_path_matches_the_standard_path():
     )
     fallback = NumbaSVEngine()
     fallback.initialize((2, 2), 0)
-    fallback._state = fallback._apply_local(fallback.state, matrix, (1,))
+    fallback.apply_channel(
+        ApplyChannelStep(kraus_ops=(matrix,), target_indices=(1,)),
+        np.random.default_rng(0),
+    )
 
     assert np.array_equal(standard.export_state(), fallback.export_state())
 
 
-def test_structure_cache_pins_steps_and_reuses_resolutions():
-    simulator = NumbaSVEngine()
-    simulator.initialize((2,), 0)
+def test_structure_cache_retains_source_until_plan_pruned():
+    from fatqat.simulator._engine.numerics.numba_kernels._matrix_cache import (
+        _MatrixStructureCache,
+    )
+
+    cache = _MatrixStructureCache()
     step = ApplyMatrixStep(
         matrix=np.eye(2, dtype=complex),
         target_indices=(0,),
         kernel_key=BuiltinKernelKey.I,
     )
-    first = simulator._resolve_structure(step)
-    # Trajectory initialization resets state without discarding this plan's work.
-    simulator.initialize((2,), 0)
-    assert simulator._resolve_structure(step) is first  # cached, not re-resolved
-    assert simulator._structure_cache[id(step)][0] is step  # pinned identity
+    cache.resolve(step)
+    step_ref = weakref.ref(step)
+    del step
+    gc.collect()
+    # Pinning the source prevents recycled step identities from aliasing.
+    assert step_ref() is not None
+    cache.retain(())
+    gc.collect()
+    assert step_ref() is None
 
 
 def _reconstruct(csr, d):
@@ -297,31 +320,33 @@ def test_fuse_gate_channels_merges_an_adjacent_same_target_pair():
     assert np.allclose(fused[0].kraus_ops[1], k1 @ m)
 
 
-def test_plan_chunks_floor_scales_with_thread_count():
+def test_choose_chunk_count_floor_scales_with_thread_count():
     # The parallel floor is per-thread (`_MAX_THREADS * _GRAIN_TO_THREAD`), so a
     # state stays serial just below it and splits across threads at it - the
     # absolute crossover tracks the core count, not a fixed size.
-    from fatqat.simulator._engine.nb import (
+    from fatqat.simulator._engine.numerics.numba_kernels._layouts import (
         _GRAIN_TO_THREAD,
         _MAX_THREADS,
         _MIN_SIZE_TO_THREAD,
-        _plan_chunks,
+        _choose_chunk_count,
     )
 
     assert _MIN_SIZE_TO_THREAD == _MAX_THREADS * _GRAIN_TO_THREAD
     cosets = _MIN_SIZE_TO_THREAD  # >> _MAX_THREADS, so the chunk count is thread-bound
-    assert _plan_chunks(cosets, _MIN_SIZE_TO_THREAD - 1) == 1
-    assert _plan_chunks(cosets, _MIN_SIZE_TO_THREAD) == min(_MAX_THREADS, cosets)
+    assert _choose_chunk_count(cosets, _MIN_SIZE_TO_THREAD - 1) == 1
+    assert _choose_chunk_count(cosets, _MIN_SIZE_TO_THREAD) == min(_MAX_THREADS, cosets)
 
 
 def test_coset_chunking_is_bit_identical_across_chunk_counts():
     # The floor only ever changes the chunk COUNT; disjoint cosets make the
     # result independent of it, which is why moving the floor never changes an
     # amplitude. A dense gate applied as one chunk equals it applied as many.
-    from fatqat.simulator._engine.nb import (
+    from fatqat.simulator._engine.numerics.numba_kernels._layouts import (
+        _build_apply_layout,
+    )
+    from fatqat.simulator._engine.numerics.numba_kernels._apply import (
         _apply_resolved_parallel,
         _apply_resolved_serial,
-        _compute_apply_plan,
     )
 
     rng = np.random.default_rng(0)
@@ -335,7 +360,7 @@ def test_coset_chunking_is_bit_identical_across_chunk_counts():
     columns = np.empty(2, dtype=np.int64)
     values = np.empty(2, dtype=np.complex128)
     code = int(_classify_matrix(matrix, columns, values))
-    offsets, comp_strides, comp_dims, num_cosets, _ = _compute_apply_plan(
+    offsets, comp_strides, comp_dims, num_cosets, _ = _build_apply_layout(
         (2,) * 6, (0,)
     )
 

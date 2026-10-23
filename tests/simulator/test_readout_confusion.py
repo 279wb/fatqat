@@ -10,6 +10,8 @@ integer allocation.
 import numpy as np
 import pytest
 
+from fatqat.simulator._engine._execution_policy import _select_execution_path
+
 import fatqat as fq
 import fatqat.operations as ops
 from fatqat._backends.steps import MeasurementStep
@@ -89,8 +91,10 @@ def test_readout_confusion_keeps_single_pass_shape():
     program = _measured_program()
     backend = Simulator("statevector", noise=_readout_model(_FLIP_30))
     _plan, _facts = backend._lower_program(program)
-    execution_path = backend._engine._select_execution_path(
-        _plan, initial_state=backend._prepare_initial_state(None)
+    execution_path = _select_execution_path(
+        _plan,
+        quantum_capabilities=backend._engine.capabilities.quantum,
+        initial_state=backend._prepare_initial_state(None),
     )
 
     assert execution_path == "single_pass"
@@ -196,7 +200,7 @@ def test_reused_qubit_evolves_from_the_true_state():
 
 def test_threaded_compiled_shots_match_serial_with_readout_confusion():
     pytest.importorskip("numba")
-    from fatqat.simulator._engine import nb
+    from fatqat.simulator._engine.engines import numba_engine as nb
 
     if nb._MAX_THREADS < 2:
         pytest.skip("Numba exposes no parallel thread capacity")
@@ -244,17 +248,12 @@ def test_numba_compiled_multi_shot_kernel_applies_readout_confusion():
     # error was silently dropped under runtime="numba" - X then always-flip
     # readout reported "1" instead of "0".
     pytest.importorskip("numba")
-    from fatqat.simulator._engine.nb import _plan_compilable
-
     always_flip = np.array([[0.0, 1.0], [1.0, 0.0]])
     noise = _readout_model(always_flip)
     program = fq.Program(1, 1)
     program.add(ops.X, 0)
     program.measure(0, 0)
     program.add(ops.Reset, 0)  # a reset forces the dynamic path
-
-    plan, _ = Simulator(noise=noise)._lower_program(program)
-    assert _plan_compilable(plan) is True
 
     counts = {}
     for runtime in ("numpy", "numba"):

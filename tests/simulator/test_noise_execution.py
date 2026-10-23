@@ -3,6 +3,8 @@
 import numpy as np
 import pytest
 
+from fatqat.simulator._engine._execution_policy import _select_execution_path
+
 import fatqat as fq
 import fatqat.operations as ops
 from fatqat._backends.steps import ApplyChannelStep, ApplyMatrixStep
@@ -18,8 +20,9 @@ from fatqat.noise import (
     TransitionRelaxation,
     default_channel_implementation_map,
 )
-from fatqat.simulator._engine.np import NumpySVEngine
+from fatqat.simulator._engine.engines.numpy_engine import NumpySVEngine
 from fatqat.simulator._execution_contract import (
+    _ResultRequest,
     _ExecutionContext,
     _InitialEvolutionState,
 )
@@ -155,8 +158,10 @@ def test_unconditional_channel_keeps_density_matrix_on_fast_path():
     backend = Simulator(method="DM", noise=_depolarized_x_model())
     program = _x_program(with_measurement=True)
     _plan, _facts = backend._lower_program(program)
-    execution_path = backend._engine._select_execution_path(
-        _plan, initial_state=backend._prepare_initial_state(None)
+    execution_path = _select_execution_path(
+        _plan,
+        quantum_capabilities=backend._engine.capabilities.quantum,
+        initial_state=backend._prepare_initial_state(None),
     )
 
     assert execution_path == "single_pass"
@@ -166,8 +171,10 @@ def test_channel_forces_statevector_onto_dynamic_path():
     backend = Simulator(method="SV", noise=_depolarized_x_model())
     program = _x_program(with_measurement=True)
     _plan, _facts = backend._lower_program(program)
-    execution_path = backend._engine._select_execution_path(
-        _plan, initial_state=backend._prepare_initial_state(None)
+    execution_path = _select_execution_path(
+        _plan,
+        quantum_capabilities=backend._engine.capabilities.quantum,
+        initial_state=backend._prepare_initial_state(None),
     )
 
     assert execution_path == "per_shot"
@@ -345,7 +352,7 @@ def test_seeded_noisy_runs_are_reproducible():
 
 def test_threaded_compiled_shots_match_serial_with_channels():
     pytest.importorskip("numba")
-    from fatqat.simulator._engine import nb
+    from fatqat.simulator._engine.engines import numba_engine as nb
 
     if nb._MAX_THREADS < 2:
         pytest.skip("Numba exposes no parallel thread capacity")
@@ -558,7 +565,7 @@ def test_numba_compiled_multi_shot_plan_matches_numpy_channels():
     # quantum-jump branches from the reduced density matrix while NumPy norms
     # each branch - same distribution, counts agree statistically not bit-wise.
     pytest.importorskip("numba")
-    from fatqat.simulator._engine.nb import NumbaSVEngine, _plan_compilable
+    from fatqat.simulator._engine.engines.numba_engine import NumbaSVEngine
 
     noise = NoiseModel()
     noise.add(Depolarizing(p=0.3), operation=ops.X)
@@ -567,11 +574,10 @@ def test_numba_compiled_multi_shot_plan_matches_numpy_channels():
     program.add(ops.X, 0)
     program.measure(0, 0)
     plan, _facts = backend._lower_program(program)
-    assert _plan_compilable(plan) is True
 
     # Direct engine execution below supplies an explicit private serial policy.
     shots = 400
-    request = backend._request_cls(counts=True, statevector=False)
+    request = _ResultRequest(counts=True, final_state=False)
     counts = {}
     for cls in (NumpySVEngine, NumbaSVEngine):
         simulator = cls()
@@ -584,8 +590,10 @@ def test_numba_compiled_multi_shot_plan_matches_numpy_channels():
             shots=shots,
             seed=7,
         )
-        execution_path = simulator._select_execution_path(
-            plan, initial_state=_InitialEvolutionState(quantum=start)
+        execution_path = _select_execution_path(
+            plan,
+            quantum_capabilities=simulator.capabilities.quantum,
+            initial_state=_InitialEvolutionState(quantum=start),
         )
         policy = _ExecutionPolicy(
             execution_path=execution_path,
@@ -593,7 +601,7 @@ def test_numba_compiled_multi_shot_plan_matches_numpy_channels():
             kernel_strategy="serial",
             worker_limit=1,
             fusion=False,
-            use_compiled_multi_shot_kernel=cls is NumbaSVEngine,
+            workflow="numba_trajectories" if cls is NumbaSVEngine else "python",
         )
         payload = simulator.materialize_execution(
             tuple(plan),
@@ -601,7 +609,7 @@ def test_numba_compiled_multi_shot_plan_matches_numpy_channels():
             n_clbits=context.n_clbits,
             policy=policy,
         )
-        raw = simulator.execute_local(
+        raw = simulator.execute_in_process(
             context,
             payload,
             policy,
@@ -654,8 +662,8 @@ def test_reduced_diagonal_matches_the_full_reduced_density_matrix():
     # The marginal the diagonal weighing reads must be the diagonal of what
     # the general path builds, for any target tuple and mix of dimensions.
     pytest.importorskip("numba")
-    from fatqat.simulator._engine.nb import (
-        NumbaSVEngine,
+    from fatqat.simulator._engine.engines.numba_engine import NumbaSVEngine
+    from fatqat.simulator._engine.numerics.numba_kernels._channel import (
         _reduced_density,
         _reduced_diagonal,
     )
@@ -669,7 +677,7 @@ def test_reduced_diagonal_matches_the_full_reduced_density_matrix():
     engine = NumbaSVEngine()
     engine.initialize(dims, 0)
     for targets in ((0,), (1,), (0, 2), (2, 1)):
-        offsets, comp_strides, comp_dims, _, _ = engine._build_apply_plan(targets)
+        offsets, comp_strides, comp_dims, _, _ = engine._build_apply_layout(targets)
         cosets = size // offsets.shape[0]
         full = _reduced_density(state, offsets, comp_strides, comp_dims, cosets)
         marginal = _reduced_diagonal(state, offsets, comp_strides, comp_dims, cosets)
@@ -757,3 +765,39 @@ def test_multi_slot_extent_has_joint_kraus_dimension():
 
     assert channel_steps[0].target_indices == (1, 0)
     assert all(kraus.shape == (4, 4) for kraus in channel_steps[0].kraus_ops)
+
+
+@pytest.mark.parametrize("seed", [0, 7, 42])
+def test_numba_single_trajectory_counts_agree_with_state_request(seed):
+    program = fq.Program(2, 2)
+    program.add(ops.H, 0)
+    program.add(ops.CX, (0, 1))
+    program.measure(0, 0)
+    program.add(ops.X, 1)
+    program.measure(1, 1)
+    noise = NoiseModel()
+    noise.add(Depolarizing(p=0.3), operation=ops.X)
+    backend = Simulator("SV", runtime="numba", noise=noise)
+    config = {
+        "seed": seed,
+        "shot_parallelism": "serial",
+        "kernel_parallelism": "serial",
+    }
+
+    counts = (
+        backend.run(
+            program, shots=1, simulation_config=config, result_config={"counts": True}
+        )
+        .result()
+        .get_counts()
+    )
+    with_state = backend.run(
+        program,
+        shots=1,
+        simulation_config=config,
+        result_config={"counts": True, "final_state": True},
+    ).result()
+
+    assert counts == with_state.get_counts()
+    assert sum(counts.values()) == 1
+    assert np.isclose(np.linalg.norm(with_state.get_statevector()), 1.0)

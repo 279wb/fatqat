@@ -1,5 +1,7 @@
 """Public Estimator integration for matrix Simulator capabilities."""
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -38,7 +40,9 @@ def test_estimator_remaps_logical_factors_through_engine_allocation(method):
 def test_classical_support_is_required_only_for_sampled_expectations(monkeypatch):
     backend = Simulator(runtime="numpy")
     monkeypatch.setattr(
-        backend._engine, "_trajectory_capabilities", _TrajectoryCapabilities()
+        backend._engine,
+        "_capabilities",
+        replace(backend._engine.capabilities, trajectory=_TrajectoryCapabilities()),
     )
     estimator = fq.Estimator(backend)
     program = fq.Program(1)

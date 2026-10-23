@@ -6,7 +6,7 @@ import pytest
 import fatqat as fq
 import fatqat.operations as ops
 from fatqat.simulator import Simulator
-from fatqat.simulator._engine.np import NumpySVEngine
+from fatqat.simulator._engine.engines.numpy_engine import NumpySVEngine
 from fatqat._backends.steps import ApplyMatrixStep
 from fatqat.implementation.matrices import shift_matrix
 
@@ -83,7 +83,7 @@ def test_export_state_exposes_mutable_quantum_data():
     exported = eng.export_state()
     exported[:] = [0, 1]
 
-    assert np.array_equal(eng.probabilities(), [0, 1])
+    assert np.array_equal(eng.state, [0, 1])
 
 
 def test_swap_exchanges_two_qubits():

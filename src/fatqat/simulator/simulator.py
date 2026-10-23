@@ -56,7 +56,7 @@ from ..result import (
     _ResultConfig,
     counts_dict_from_arrays,
 )
-from ._engine.base import MatrixEngine, _shot_seed_sequences
+from ._engine.engines.base import MatrixEngine
 from .._backends.backend_utils import (
     _LoweringContext,
     _canonicalize_method,
@@ -69,15 +69,10 @@ from ._execution_contract import (
     _ExecutionContext,
     _PlanFacts,
     RawResult,
-    _DensityMatrixResultRequest,
     _ResultRequest,
     _SimulationConfig,
-    _StateVectorResultRequest,
-    _SuperopResultRequest,
-    _UnitaryResultRequest,
     _InitialEvolutionState,
 )
-from ._engine._execution_policy import _ExecutionPolicy
 from .._backends.view_normalization import ProgramInstruction, _break_grouped_operations
 from .._backends.steps import (
     ApplyChannelStep,
@@ -93,34 +88,28 @@ class _MethodSpec:
     """Everything the chosen simulation method binds into a `Simulator`.
 
     Attributes:
-        request_cls: The method's engine-request value object.
         numpy_engine_name: Class name in the lazily loaded NumPy engine module.
         numba_engine_name: Class name in the lazily loaded Numba engine module.
     """
 
-    request_cls: type
     numpy_engine_name: str
     numba_engine_name: str
 
 
 _METHOD_SPECS: dict[str, _MethodSpec] = {
     "statevector": _MethodSpec(
-        request_cls=_StateVectorResultRequest,
         numpy_engine_name="NumpySVEngine",
         numba_engine_name="NumbaSVEngine",
     ),
     "density_matrix": _MethodSpec(
-        request_cls=_DensityMatrixResultRequest,
         numpy_engine_name="NumpyDMEngine",
         numba_engine_name="NumbaDMEngine",
     ),
     "unitary": _MethodSpec(
-        request_cls=_UnitaryResultRequest,
         numpy_engine_name="NumpyUnitaryEngine",
         numba_engine_name="NumbaUnitaryEngine",
     ),
     "superop": _MethodSpec(
-        request_cls=_SuperopResultRequest,
         numpy_engine_name="NumpySuperopEngine",
         numba_engine_name="NumbaSuperopEngine",
     ),
@@ -135,24 +124,7 @@ class _PreparedExecution:
     facts: _PlanFacts
     lowering: _LoweringContext
     simulation: _SimulationConfig
-    initial_state: _InitialEvolutionState[np.ndarray]
-
-
-@dataclass(frozen=True, slots=True)
-class _PreparedRun(_PreparedExecution):
-    """Direct-result settings added to one prepared execution.
-
-    Built once per ``run()`` and once per ``run_sweep()`` batch, on the
-    direct-raise validation path. Nothing here depends on parameter values.
-    ``plan`` is a concrete step tuple for ``run()`` and a
-    `planning._ParametricPlan` for ``run_sweep()``, which materializes it once
-    per row before calling ``Simulator._execute_plan``.
-    """
-
-    config: _ResultConfig
-    shots: int
-    request: _ResultRequest
-    context: _ExecutionContext
+    initial_state: _InitialEvolutionState[Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,28 +135,6 @@ class _BoundExpectationOccurrence:
     engine_factors: tuple[tuple[int, str], ...]
     scratch_indices: tuple[int, ...]
     tail: tuple[ResolvedStep, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _PreparedExpectationSample:
-    """One sampled occurrence with its validated execution policy."""
-
-    bound: _BoundExpectationOccurrence
-    execution: _PreparedExecution
-    policy: _ExecutionPolicy
-
-
-@dataclass(frozen=True, slots=True)
-class _PreparedExpectation:
-    """Validated matrix expectation work before numerical execution."""
-
-    execution: _PreparedExecution
-    constants: tuple[float, ...]
-    bound_occurrences: tuple[_BoundExpectationOccurrence, ...]
-    state_request: _ResultRequest
-    state_policy: _ExecutionPolicy | None
-    sample_request: _ResultRequest
-    samples: tuple[_PreparedExpectationSample, ...]
 
 
 class Simulator:
@@ -287,10 +237,9 @@ class Simulator:
             )
         # Select implementations here; execution support belongs to the engine.
         spec = _METHOD_SPECS[normalized]
-        self._request_cls = spec.request_cls
         if normalized_runtime == "numba":
             try:
-                from ._engine import nb as engine_module
+                from ._engine.engines import numba_engine as engine_module
             except ImportError as exc:
                 raise BackendValidationError(
                     "runtime='numba' requires the numba dependency; reinstall "
@@ -298,7 +247,7 @@ class Simulator:
                 ) from exc
             engine_name = spec.numba_engine_name
         else:
-            from ._engine import np as engine_module
+            from ._engine.engines import numpy_engine as engine_module
 
             engine_name = spec.numpy_engine_name
         self._engine_cls: type[MatrixEngine] = getattr(engine_module, engine_name)
@@ -525,9 +474,8 @@ class Simulator:
         """Validate and execute one program.
 
         The returned job is eager and already terminal. Program and option
-        validation errors normally raise directly. Errors during execution or
-        result assembly are stored on the job, and ``Job.result()`` re-raises
-        the original error.
+        validation errors raise directly. Execution errors follow the
+        ``error_handling`` option described below.
 
         Args:
             program: Program to execute, or an executable compiler result that
@@ -546,20 +494,22 @@ class Simulator:
                 validated. Basis indices use public most-significant-first
                 subsystem order; no basis-order permutation is applied.
                 Operator methods reject an initial state.
+                Shape errors raise directly. Runtime array-conversion failures
+                follow ``error_handling``.
             simulation_config: Optional per-run execution controls. String
                 choices are case-sensitive. Accepted keys are:
 
                 - ``"seed"`` (``int | None``, default ``None``): Use a
                   non-negative sampling seed. Booleans are rejected; ``None``
                   uses fresh entropy. A negative value is rejected during
-                  execution, so ``Job.result()`` raises ``ValueError``. A
+                  execution and follows ``error_handling``. A
                   fixed seed reproduces counts only for the same method,
-                  runtime, parallelism settings, and result requests: on the
-                  numba runtime, channel-noise runs select mathematically
-                  equal but numerically distinct samplers depending on
-                  ``shot_parallelism`` and on whether a final state is
-                  requested, so knife-edge draws can differ across those
-                  settings.
+                  runtime, shot count, parallelism settings, and result
+                  requests: on the numba runtime, channel-noise runs select
+                  mathematically equal but numerically distinct samplers
+                  depending on shot count, ``shot_parallelism``, and whether
+                  a final state is requested, so knife-edge draws can differ
+                  across those settings.
                 - ``"shot_parallelism"`` (``str``, default ``"auto"``): How
                   independent shots run: ``"auto"``, ``"serial"``,
                   ``"threads"``, or ``"processes"``. Explicit parallel modes
@@ -573,6 +523,12 @@ class Simulator:
                 - ``"max_workers"`` (``int | None``, default ``None``):
                   Positive concurrency limit. ``None`` uses the runtime
                   limit; ``1`` conflicts with an explicit parallel request.
+                - ``"error_handling"`` (``str``, default ``"raise"``):
+                  ``"raise"`` propagates execution and result-assembly errors
+                  immediately. ``"capture"`` returns a failed job whose
+                  ``result()`` re-raises the original exception. Input and
+                  configuration validation always raise directly. Engine
+                  planning errors follow this option.
                 - ``"fusion"`` (``bool``, default ``False``): Whether to
                   combine compatible adjacent operations. ``True`` requires
                   Numba with ``density_matrix``, ``unitary``, or ``superop``.
@@ -624,12 +580,12 @@ class Simulator:
             initial_state=initial_state,
             simulation_config=simulation_config,
         )
-        prepared = self._prepare_run(
+        config, context = self._prepare_run(
             execution, shots=shots, result_config=result_config
         )
-        plan = prepared.plan
+        plan = execution.plan
         assert isinstance(plan, tuple), "run() lowers fully bound programs only"
-        return self._execute_plan(plan, prepared)
+        return self._execute_plan(plan, execution, config, context)
 
     def run_sweep(
         self,
@@ -653,9 +609,8 @@ class Simulator:
         realizations plus execution - layout resolution, implementation
         selection, and noise matching are not repeated per row. One explicit
         seed is reused for every row, so sampled row errors can be correlated.
-        Binding and row-validation errors raise directly. If execution fails
-        for a row, the returned sweep job is failed and its ``result()`` method
-        re-raises the error; no partial list is exposed.
+        Binding and row-validation errors raise directly. Execution errors
+        follow ``run()``'s error-handling policy; no partial list is exposed.
 
         Args:
             program: Parameterized template program.
@@ -673,8 +628,7 @@ class Simulator:
                 - ``"seed"`` (``int | None``, default ``None``): Use a
                   non-negative sampling seed; booleans are rejected. ``None``
                   uses fresh entropy for each row. A negative value fails
-                  during execution, so the sweep job's ``result()`` raises
-                  ``ValueError``.
+                  during execution and follows ``error_handling``.
                 - ``"shot_parallelism"`` (``str``, default ``"auto"``):
                   ``"auto"``, ``"serial"``, ``"threads"``, or
                   ``"processes"``. Explicit parallel modes require an
@@ -686,6 +640,8 @@ class Simulator:
                 - ``"max_workers"`` (``int | None``, default ``None``):
                   Positive concurrency limit. ``None`` uses the runtime
                   limit; ``1`` conflicts with an explicit parallel request.
+                - ``"error_handling"``: Same values, default, and behavior as
+                  ``run()``.
                 - ``"fusion"`` (``bool``, default ``False``): Whether to
                   combine compatible operations. ``True`` requires Numba with
                   ``density_matrix``, ``unitary``, or ``superop``.
@@ -754,55 +710,53 @@ class Simulator:
             simulation_config=simulation_config,
             param_order=param_order,
         )
-        prepared = self._prepare_run(
+        config, context = self._prepare_run(
             execution, shots=shots, result_config=result_config
         )
-        template = prepared.plan
+        template = execution.plan
         assert isinstance(template, planning._ParametricPlan)
         thetas = [tuple(row[parameter] for parameter in param_order) for row in rows]
         results: list[Result] = []
         # Rule and shape failures raise directly from the iteration, exactly
         # as they raise directly from lowering in run().
         for point_plan in template.resolve_rows(thetas):
+            point_job = self._execute_plan(point_plan, execution, config, context)
             try:
-                results.append(self._execute_plan(point_plan, prepared).result())
+                results.append(point_job.result())
             except Exception as exc:  # execution-stage failure
+                if execution.simulation.error_handling == "raise":
+                    raise
                 return Job(status="ERROR", error=exc)
         return Job(status="DONE", result=results)
 
     def _prepare_run(
         self,
-        prepared: _PreparedExecution,
+        execution: _PreparedExecution,
         *,
         shots: int,
         result_config: dict[str, Any] | None,
-    ) -> _PreparedRun:
-        """Resolve direct results and shot requirements for an already lowered program."""
+    ) -> tuple[_ResultConfig, _ExecutionContext]:
+        """Resolve direct results and shot requirements before execution.
+
+        Called once per run or sweep batch on the direct-raise validation path.
+        The returned settings do not depend on parameter values; sweeps reuse
+        them while materializing the execution plan separately for each row.
+        """
         config = _normalize_config(
             result_config,
             self._result_config_cls,
             "result_config",
             backend_name=type(self).__name__,
         )
-        request = self._validate_run_request(config, shots, prepared.facts)
+        request = self._validate_run_request(config, shots, execution.facts)
         context = _ExecutionContext(
             request=request,
-            system_dims=tuple(prepared.lowering.engine_allocation.system_dims),
-            n_clbits=prepared.lowering.classical_allocation.n_clbits,
+            system_dims=tuple(execution.lowering.engine_allocation.system_dims),
+            n_clbits=execution.lowering.classical_allocation.n_clbits,
             shots=shots,
-            seed=prepared.simulation.seed,
+            seed=execution.simulation.seed,
         )
-        return _PreparedRun(
-            plan=prepared.plan,
-            facts=prepared.facts,
-            lowering=prepared.lowering,
-            simulation=prepared.simulation,
-            initial_state=prepared.initial_state,
-            config=config,
-            shots=shots,
-            request=request,
-            context=context,
-        )
+        return config, context
 
     def _prepare_execution(
         self,
@@ -864,10 +818,8 @@ class Simulator:
         self._validate_engine_support(prepared)
         return prepared
 
-    def _prepare_initial_state(
-        self, quantum: np.ndarray | None
-    ) -> _InitialEvolutionState[np.ndarray]:
-        """Wrap normalized quantum input; subclasses supply classical components."""
+    def _prepare_initial_state(self, quantum: Any) -> _InitialEvolutionState[Any]:
+        """Wrap quantum input; subclasses supply classical components."""
         return _InitialEvolutionState(quantum=quantum)
 
     def _run_expectation(
@@ -885,19 +837,20 @@ class Simulator:
             initial_state=None,
             simulation_config=simulation_config,
         )
-        prepared = self._prepare_expectation(
+        constants, bound_occurrences = self._prepare_expectation(
             execution, program, observables, shots=shots
         )
         try:
-            if not prepared.bound_occurrences:
-                values = prepared.constants
-                standard_errors = (0.0,) * len(values)
-            elif shots == 0:
-                values = self._execute_exact_expectation(prepared)
+            if shots == 0 or not bound_occurrences:
+                values = self._execute_exact_expectation(
+                    execution, constants, bound_occurrences, shots=shots
+                )
                 standard_errors = (0.0,) * len(values)
             else:
                 values, standard_errors = self._execute_sampled_expectation(
-                    prepared,
+                    execution,
+                    constants,
+                    bound_occurrences,
                     shots=shots,
                 )
             return Job(
@@ -910,6 +863,8 @@ class Simulator:
                 ),
             )
         except Exception as exc:
+            if execution.simulation.error_handling == "raise":
+                raise
             return Job(status="ERROR", error=exc)
 
     def _prepare_expectation(
@@ -919,7 +874,7 @@ class Simulator:
         observables: tuple[Observable, ...],
         *,
         shots: int,
-    ) -> _PreparedExpectation:
+    ) -> tuple[tuple[float, ...], tuple[_BoundExpectationOccurrence, ...]]:
         """Bind observables and prepare expectation work from a lowered program."""
         plan = execution.plan
         assert isinstance(plan, tuple), "expectation runs lower bound programs only"
@@ -941,8 +896,6 @@ class Simulator:
             raise UnsupportedOperationError(
                 "sampled expectations require an engine with a classical register"
             )
-        state_request = self._request_cls(counts=False, **{self._state_field: True})
-
         occurrences, constants = _plan_term_occurrences(observables)
         bound_occurrences = self._bind_expectation_occurrences(
             program,
@@ -950,98 +903,7 @@ class Simulator:
             occurrences,
             sampled=shots > 0,
         )
-        sample_request = self._request_cls(
-            counts=True,
-            **{self._state_field: False},
-        )
-        state_policy = None
-        samples = []
-        if not bound_occurrences:
-            # There is no numerical execution, but explicit engine controls
-            # retain the same validation contract as a direct backend run.
-            no_result_request = self._request_cls(
-                counts=False,
-                **{self._state_field: False},
-            )
-            self._resolve_plan_policy(
-                plan,
-                execution,
-                request=no_result_request,
-                shots=shots,
-            )
-        elif shots == 0:
-            state_policy = self._resolve_plan_policy(
-                plan,
-                execution,
-                request=state_request,
-                shots=1,
-            )
-        else:
-            state_policy, samples = self._prepare_expectation_samples(
-                execution,
-                bound_occurrences,
-                state_request=state_request,
-                sample_request=sample_request,
-                shots=shots,
-            )
-
-        return _PreparedExpectation(
-            execution=execution,
-            constants=constants,
-            bound_occurrences=bound_occurrences,
-            state_request=state_request,
-            state_policy=state_policy,
-            sample_request=sample_request,
-            samples=tuple(samples),
-        )
-
-    def _prepare_expectation_samples(
-        self,
-        execution: _PreparedExecution,
-        bound_occurrences: tuple[_BoundExpectationOccurrence, ...],
-        *,
-        state_request: _ResultRequest,
-        sample_request: _ResultRequest,
-        shots: int,
-    ) -> tuple[_ExecutionPolicy | None, tuple[_PreparedExpectationSample, ...]]:
-        """Resolve base-state reuse and per-occurrence sampling policies."""
-        plan = execution.plan
-        assert isinstance(plan, tuple)
-        state_policy = None
-        if not execution.facts.stochastic_final_state:
-            state_policy = self._resolve_plan_policy(
-                plan,
-                execution,
-                request=state_request,
-                shots=1,
-            )
-
-        samples = []
-        for bound in bound_occurrences:
-            if execution.facts.stochastic_final_state:
-                sample_plan = plan + bound.tail
-                sample_facts = self._analyze_lowered_plan(sample_plan)
-            else:
-                sample_plan = bound.tail
-                sample_facts = self._analyze_common_plan_facts(sample_plan)
-            sample_execution = replace(
-                execution,
-                plan=sample_plan,
-                facts=sample_facts,
-            )
-            samples.append(
-                _PreparedExpectationSample(
-                    bound=bound,
-                    execution=sample_execution,
-                    policy=self._resolve_plan_policy(
-                        sample_plan,
-                        sample_execution,
-                        request=sample_request,
-                        shots=shots,
-                    ),
-                )
-            )
-        return state_policy, tuple(samples)
+        return constants, bound_occurrences
 
     def _bind_expectation_occurrences(
         self,
@@ -1106,16 +968,13 @@ class Simulator:
 
     def _execute_expectation_base(
         self,
-        prepared: _PreparedExpectation,
+        execution: _PreparedExecution,
     ) -> _InitialEvolutionState:
         """Execute once and retain quantum and classical initialization together."""
-        execution = prepared.execution
         plan = execution.plan
         assert isinstance(plan, tuple)
-        if prepared.state_policy is None:
-            raise RuntimeError("expectation base execution has no resolved policy")
         context = _ExecutionContext(
-            request=prepared.state_request,
+            request=_ResultRequest(counts=False, final_state=True),
             system_dims=tuple(execution.lowering.engine_allocation.system_dims),
             n_clbits=execution.lowering.classical_allocation.n_clbits,
             shots=1,
@@ -1124,7 +983,7 @@ class Simulator:
         raw = self._engine.execute(
             plan=plan,
             context=context,
-            policy=prepared.state_policy,
+            simulation_config=execution.simulation,
             initial_state=execution.initial_state,
         )
         if raw.state is None:
@@ -1133,44 +992,63 @@ class Simulator:
 
     def _execute_exact_expectation(
         self,
-        prepared: _PreparedExpectation,
+        execution: _PreparedExecution,
+        constants: tuple[float, ...],
+        bound_occurrences: tuple[_BoundExpectationOccurrence, ...],
+        *,
+        shots: int,
     ) -> tuple[float, ...]:
         """Contract every observable against one backend-evolved state."""
-        state = self._execute_expectation_base(prepared)
-        terms_by_observable = [[] for _constant in prepared.constants]
-        for bound in prepared.bound_occurrences:
+        plan = execution.plan
+        assert isinstance(plan, tuple)
+        terms_by_observable = [[] for _constant in constants]
+        for bound in bound_occurrences:
             terms_by_observable[bound.occurrence.observable_index].append(
                 (bound.occurrence.coefficient, bound.engine_factors)
             )
-        values = self._engine._expectation_values(
-            state.quantum,
-            tuple(tuple(terms) for terms in terms_by_observable),
-            policy=prepared.state_policy,
+        has_terms = bool(bound_occurrences)
+        context = _ExecutionContext(
+            request=_ResultRequest(counts=False, final_state=has_terms),
+            system_dims=tuple(execution.lowering.engine_allocation.system_dims),
+            n_clbits=execution.lowering.classical_allocation.n_clbits,
+            shots=1 if has_terms else shots,
+            seed=execution.simulation.seed,
         )
+        values = self._engine.execute_expectation(
+            plan,
+            tuple(tuple(terms) for terms in terms_by_observable) if has_terms else (),
+            context=context,
+            simulation_config=execution.simulation,
+            initial_state=execution.initial_state,
+        )
+        if not has_terms:
+            return constants
         return tuple(
-            constant + value
-            for constant, value in zip(prepared.constants, values, strict=True)
+            constant + value for constant, value in zip(constants, values, strict=True)
         )
 
     def _execute_sampled_expectation(
         self,
-        prepared: _PreparedExpectation,
+        execution: _PreparedExecution,
+        constants: tuple[float, ...],
+        bound_occurrences: tuple[_BoundExpectationOccurrence, ...],
         *,
         shots: int,
     ) -> tuple[tuple[float, ...], tuple[float, ...]]:
         """Execute native outcomes for each independent term occurrence."""
+        plan = execution.plan
+        assert isinstance(plan, tuple)
         base_state = (
-            self._execute_expectation_base(prepared)
-            if prepared.state_policy is not None
+            self._execute_expectation_base(execution)
+            if not execution.facts.stochastic_final_state
             else None
         )
+        request = _ResultRequest(counts=True, final_state=False)
         statistics = []
-        child_seeds = _shot_seed_sequences(
-            prepared.execution.simulation.seed,
-            len(prepared.samples),
+        child_seeds = np.random.SeedSequence(execution.simulation.seed).spawn(
+            len(bound_occurrences)
         )
-        for child_seed, sample in zip(child_seeds, prepared.samples, strict=True):
-            execution = sample.execution
+        for child_seed, bound in zip(child_seeds, bound_occurrences, strict=True):
             initial = base_state if base_state is not None else execution.initial_state
             clbits = initial.classical.clbits
             if clbits is not None:
@@ -1178,103 +1056,86 @@ class Simulator:
                     initial,
                     classical=replace(
                         initial.classical,
-                        clbits=clbits + (0,) * len(sample.bound.engine_factors),
+                        clbits=clbits + (0,) * len(bound.engine_factors),
                     ),
                 )
             context = _ExecutionContext(
-                request=prepared.sample_request,
+                request=request,
                 system_dims=tuple(execution.lowering.engine_allocation.system_dims),
                 n_clbits=(
                     execution.lowering.classical_allocation.n_clbits
-                    + len(sample.bound.engine_factors)
+                    + len(bound.engine_factors)
                 ),
                 shots=shots,
                 seed=int(child_seed.generate_state(1, dtype=np.uint64)[0]),
             )
-            plan = execution.plan
-            assert isinstance(plan, tuple)
+            sample_plan = bound.tail if base_state is not None else plan + bound.tail
             raw = self._engine.execute(
-                plan=plan,
+                plan=sample_plan,
                 context=context,
-                policy=sample.policy,
+                simulation_config=execution.simulation,
                 initial_state=initial,
             )
             if raw.outcome_keys is None or raw.outcome_counts is None:
                 raise RuntimeError("sampled expectation execution returned no outcomes")
-            measured_rows = raw.outcome_keys[:, sample.bound.scratch_indices]
+            measured_rows = raw.outcome_keys[:, bound.scratch_indices]
             statistics.append(
                 _reduce_outcome_counts(
-                    sample.bound.engine_factors,
+                    bound.engine_factors,
                     zip(measured_rows, raw.outcome_counts, strict=True),
                 )
             )
         return _combine_term_statistics(
-            prepared.constants,
-            tuple(sample.bound.occurrence for sample in prepared.samples),
+            constants,
+            tuple(bound.occurrence for bound in bound_occurrences),
             statistics,
             shots=shots,
         )
 
     def _execute_plan(
-        self, plan: tuple[ResolvedStep, ...], prepared: _PreparedRun
+        self,
+        plan: tuple[ResolvedStep, ...],
+        execution: _PreparedExecution,
+        config: _ResultConfig,
+        context: _ExecutionContext,
     ) -> Job[Result]:
         """Execute one concrete plan under already-validated run settings.
 
-        ``plan`` is ``prepared.plan`` for an ordinary run, or one row's
-        materialized plan in a sweep. The execution policy is resolved per
-        plan because compiled multi-shot compatibility depends on the concrete
-        steps. Execution and result-assembly failures become a failed job.
+        ``plan`` is ``execution.plan`` for an ordinary run, or one row's
+        materialized plan in a sweep. Error handling controls whether engine
+        planning, execution, and result-assembly failures propagate or become
+        a failed job.
         """
-        request = prepared.request
-        policy = self._resolve_plan_policy(
-            plan,
-            prepared,
-            request=request,
-            shots=prepared.shots,
-        )
         try:
             raw = self._engine.execute(
                 plan=plan,
-                context=prepared.context,
-                initial_state=prepared.initial_state,
-                policy=policy,
+                context=context,
+                initial_state=execution.initial_state,
+                simulation_config=execution.simulation,
             )
             result = self._assemble_result(
                 raw=raw,
-                config=prepared.config,
-                simulation=prepared.simulation,
-                lowering=prepared.lowering,
-                written_clbits=prepared.facts.written_clbits,
-                request=request,
-                shots=prepared.shots,
+                config=config,
+                simulation=execution.simulation,
+                lowering=execution.lowering,
+                written_clbits=execution.facts.written_clbits,
+                request=context.request,
+                shots=context.shots,
             )
             return Job(status="DONE", result=result)
         except Exception as exc:  # execution-stage failure
+            if execution.simulation.error_handling == "raise":
+                raise
             return Job(status="ERROR", error=exc)
-
-    def _resolve_plan_policy(
-        self,
-        plan: tuple[ResolvedStep, ...],
-        prepared: _PreparedExecution,
-        *,
-        request: _ResultRequest,
-        shots: int,
-    ) -> _ExecutionPolicy:
-        """Ask the engine to resolve policy for one concrete prepared plan."""
-        return self._engine.resolve_execution_policy(
-            plan,
-            prepared.simulation,
-            counts_requested=request.counts,
-            state_requested=getattr(request, self._state_field),
-            shots=shots,
-            initial_state=prepared.initial_state,
-        )
 
     # --- validation (raises directly from run) ---
     def _validate_initial_state(
         self, initial_state: Any, system_dims: tuple[int, ...]
-    ) -> np.ndarray | None:
-        """Check an ``initial_state`` against this method, and return it as an array.
+    ) -> Any:
+        """Check input shape without converting it to runtime storage.
+
+        Array inputs expose shape metadata directly; sequences use NumPy shape
+        inference. Runtime initialization owns dtype conversion and copying.
 
         Only the *shape* is checked. Normalization, hermiticity and positivity
         are deliberately not enforced, because nothing downstream relies on
@@ -1303,7 +1164,10 @@ class Simulator:
                 "which computes the program's map rather than a state evolving "
                 "under it. Use method='statevector' or method='density_matrix'"
             )
-        state = np.asarray(initial_state, dtype=complex)
+        shape = getattr(initial_state, "shape", None)
+        if shape is None:
+            shape = np.shape(initial_state)
+        shape = tuple(shape)
         size = 1
         for dimension in system_dims:
             size *= dimension
@@ -1314,14 +1178,14 @@ class Simulator:
             if self._state_field == "density_matrix"
             else ((size,),)
         )
-        if state.shape not in allowed:
-            expected = " or ".join(str(shape) for shape in allowed)
+        if shape not in allowed:
+            expected = " or ".join(str(expected_shape) for expected_shape in allowed)
             raise BackendValidationError(
-                f"initial_state has shape {state.shape}, but this program has "
+                f"initial_state has shape {shape}, but this program has "
                 f"subsystem dimensions {tuple(system_dims)}, so "
                 f"method={self._state_field!r} needs {expected}"
             )
-        return state
+        return initial_state
 
     def _validate_run_request(
         self, config: _ResultConfig, shots: int, facts: _PlanFacts
@@ -1338,9 +1202,9 @@ class Simulator:
             has_measurement=facts.has_measurement,
             stochastic_final_state=stochastic,
         )
-        request = self._request_cls(
+        request = _ResultRequest(
             counts=counts,
-            **{self._state_field: final_state},
+            final_state=final_state,
         )
         requested_state = config.final_state is True
 
@@ -1455,7 +1319,7 @@ class Simulator:
         n_clbits = classical_allocation.n_clbits
         counts = None
         state = raw.state
-        state_requested = getattr(request, self._state_field)
+        state_requested = request.final_state
         available: set[str] = set()
         if request.counts:
             counts = counts_dict_from_arrays(raw.outcome_keys, raw.outcome_counts)

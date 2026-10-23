@@ -168,12 +168,13 @@ def test_sampled_unitary_route_reproduces_the_jump_route_exactly(runtime, monkey
     sampled = _counts(runtime, noise, program)
 
     monkeypatch.setattr(
-        "fatqat.simulator._engine.np._sampled_unitary_branches",
+        "fatqat.simulator._engine.numerics.numpy_kernels._channel._sampled_unitary_branches",
         lambda _kraus_ops: None,
     )
     if runtime == "numba":
         monkeypatch.setattr(
-            "fatqat.noise.nb._sampled_unitary_branches", lambda _kraus_ops: None
+            "fatqat.simulator._engine.workflows.numba_workflow.trajectories._sampled_unitary_branches",
+            lambda _kraus_ops: None,
         )
     jumped = _counts(runtime, noise, program)
 
@@ -308,15 +309,28 @@ def test_pauli_channel_process_batches_match_serial():
 
 def test_pauli_sampling_does_not_change_the_per_shot_draw_budget():
     pytest.importorskip("numba")
-    from fatqat.simulator._engine.nb import NumbaSVEngine
+    from functools import partial
+
+    from fatqat.simulator._engine.numerics.numba_kernels._layouts import (
+        _build_apply_layout,
+    )
+    from fatqat.simulator._engine.numerics.numba_kernels._matrix_cache import (
+        _MatrixStructureCache,
+    )
+    from fatqat.simulator._engine.workflows.numba_workflow.trajectories import (
+        _compile_dynamic_plan,
+    )
 
     backend = Simulator("SV", noise=_pauli_noise())
     program = _ghz_program()
     plan, _ = backend._lower_program(program)
-    engine = NumbaSVEngine()
-    engine.initialize((2, 2, 2), 3)
-
-    _, max_draws = engine._compile_dynamic_plan(plan)
+    dims = (2, 2, 2)
+    _, max_draws = _compile_dynamic_plan(
+        plan,
+        dims,
+        partial(_build_apply_layout, dims),
+        _MatrixStructureCache().resolve,
+    )
 
     # One draw per measurement plus one per channel occurrence (3 gates) - the
     # same budget the general jump path needs.

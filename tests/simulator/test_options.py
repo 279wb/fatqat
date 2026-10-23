@@ -5,18 +5,13 @@ import pytest
 
 import fatqat as fq
 import fatqat.operations as ops
+from fatqat._backends.steps import LossStep, MeasurementStep, ResetStep
 from fatqat.simulator._execution_contract import (
+    _ExecutionContext,
+    _ResultRequest,
     _SimulationConfig,
-    _KernelCapabilities,
     _TrajectoryCapabilities,
     _InitialEvolutionState,
-    _InitialClassicalState,
-)
-from fatqat.simulator._engine._execution_policy import (
-    _ExecutionPolicy,
-    _materialization_policy,
-    _process_child_policy,
-    _resolve_execution_policy,
 )
 from fatqat.errors import BackendValidationError
 from fatqat.simulator import Simulator
@@ -53,6 +48,8 @@ from fatqat.simulator import Simulator
             "max_workers=1 contradicts",
         ),
         ({"fusion": None}, "fusion must be a bool"),
+        ({"error_handling": "ignore"}, "unsupported error_handling"),
+        ({"error_handling": []}, "unsupported error_handling"),
     ],
 )
 def test_public_execution_configuration_rejects_invalid_values(config, match):
@@ -103,7 +100,11 @@ def test_engine_support_validates_execution_controls(
     monkeypatch, request_kind, config, match
 ):
     backend = Simulator("SV", runtime="numpy")
-    monkeypatch.setattr(backend._engine, "_supports_process_shots", False)
+    monkeypatch.setattr(
+        backend._engine,
+        "_capabilities",
+        replace(backend._engine.capabilities, supports_process_shots=False),
+    )
     program = fq.Program(1)
     theta = fq.Parameter("theta")
     program.add(ops.RX(theta if request_kind == "sweep" else 0.1), 0)
@@ -119,28 +120,69 @@ def test_engine_support_validates_execution_controls(
             backend.run(program, simulation_config=config)
 
 
-def test_materialization_failure_belongs_to_the_job(monkeypatch):
+@pytest.mark.parametrize("mode", [None, "raise", "capture"])
+@pytest.mark.parametrize(
+    "request_kind", ["run", "sweep", "expectation", "sampled_expectation"]
+)
+def test_execution_error_handling(monkeypatch, mode, request_kind):
     backend = Simulator("SV", runtime="numpy")
-    original = backend._engine.materialize_execution
-    first = True
+    error = RuntimeError("materialization failed")
 
-    def fail_once(*args, **kwargs):
-        nonlocal first
-        if first:
-            first = False
-            raise RuntimeError("materialization failed")
-        return original(*args, **kwargs)
+    def fail(*_args, **_kwargs):
+        raise error
 
-    monkeypatch.setattr(backend._engine, "materialize_execution", fail_once)
-    job = backend.run(fq.Program(1))
+    monkeypatch.setattr(backend._engine, "materialize_execution", fail)
+    config = {} if mode is None else {"error_handling": mode}
+    program = fq.Program(1)
+    theta = fq.Parameter("theta")
+    program.add(ops.RX(theta if request_kind == "sweep" else 0.1), 0)
 
-    with pytest.raises(RuntimeError, match="materialization failed"):
+    def run():
+        if request_kind == "sweep":
+            return backend.run_sweep(
+                program, {theta: [0.1, 0.2]}, simulation_config=config
+            )
+        if request_kind in {"expectation", "sampled_expectation"}:
+            return fq.Estimator(backend).run(
+                program,
+                fq.Observable([("Z", 1.0)]),
+                shots=8 if request_kind == "sampled_expectation" else 0,
+                simulation_config=config,
+            )
+        return backend.run(program, simulation_config=config)
+
+    if mode == "capture":
+        job = run()
+        with pytest.raises(RuntimeError) as caught:
+            job.result()
+    else:
+        with pytest.raises(RuntimeError) as caught:
+            run()
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("request_kind", ["run", "sweep", "expectation", "constant"])
+def test_capture_returns_engine_planning_errors_in_job(request_kind):
+    backend = Simulator("SV", runtime="numpy")
+    theta = fq.Parameter("theta")
+    program = fq.Program(1)
+    program.add(ops.RX(theta if request_kind == "sweep" else 0.1), 0)
+    config = {"error_handling": "capture", "shot_parallelism": "processes"}
+
+    def run():
+        if request_kind == "sweep":
+            return backend.run_sweep(program, {theta: [0.1]}, simulation_config=config)
+        if request_kind in {"expectation", "constant"}:
+            return fq.Estimator(backend).run(
+                program,
+                fq.Observable([("I" if request_kind == "constant" else "Z", 1.0)]),
+                simulation_config=config,
+            )
+        return backend.run(program, simulation_config=config)
+
+    job = run()
+    with pytest.raises(BackendValidationError, match="requires independent per-shot"):
         job.result()
-
-    assert backend.run(fq.Program(1)).result().get_statevector().tolist() == [
-        1 + 0j,
-        0j,
-    ]
 
 
 @pytest.mark.parametrize("operation", ["measurement", "condition"])
@@ -150,7 +192,9 @@ def test_engine_classical_support_controls_early_validation(
 ):
     backend = Simulator("SV", runtime="numpy")
     monkeypatch.setattr(
-        backend._engine, "_trajectory_capabilities", _TrajectoryCapabilities()
+        backend._engine,
+        "_capabilities",
+        replace(backend._engine.capabilities, trajectory=_TrajectoryCapabilities()),
     )
     program = fq.Program(1, 1)
     theta = fq.Parameter("theta")
@@ -177,8 +221,11 @@ def test_engine_quantum_support_controls_early_validation(monkeypatch, operation
     quantum = backend._engine.capabilities.quantum
     monkeypatch.setattr(
         backend._engine,
-        "_quantum_capabilities",
-        replace(quantum, supports_nonunitary=False),
+        "_capabilities",
+        replace(
+            backend._engine.capabilities,
+            quantum=replace(quantum, supports_nonunitary=False),
+        ),
     )
     program = fq.Program(1)
     program.add(ops.Reset if operation == "reset" else ops.X, 0)
@@ -188,396 +235,150 @@ def test_engine_quantum_support_controls_early_validation(monkeypatch, operation
 
 
 @pytest.mark.parametrize(
-    (
-        "simulation",
-        "execution_path",
-        "counts_requested",
-        "state_requested",
-        "capabilities",
-        "compatible",
-        "shots",
-        "initial_occupied",
-        "expected",
-    ),
+    "shots, first_step, expected_workflow",
     [
+        pytest.param(1, ResetStep((0,)), "python", id="single-trajectory"),
         pytest.param(
-            _SimulationConfig(),
-            "operator",
-            False,
-            True,
-            _KernelCapabilities(True, 8, False),
-            False,
-            1,
-            None,
-            ("none", "adaptive", None, False, False),
-            id="operator-auto-adaptive-kernels",
+            64, ResetStep((0,)), "numba_trajectories", id="repeated-trajectories"
         ),
         pytest.param(
-            _SimulationConfig(),
-            "operator",
-            False,
-            True,
-            _KernelCapabilities(False, 1, False),
-            False,
-            1,
-            None,
-            ("none", "serial", 1, False, False),
-            id="operator-auto-serial-without-thread-capability",
-        ),
-        pytest.param(
-            _SimulationConfig(),
-            "per_shot",
-            True,
-            False,
-            _KernelCapabilities(True, 8, False),
-            True,
-            64,
-            None,
-            ("threads", "serial", None, False, True),
-            id="auto-compatible-compiled-shots",
-        ),
-        pytest.param(
-            _SimulationConfig(max_workers=4),
-            "per_shot",
-            True,
-            False,
-            _KernelCapabilities(True, 8, False),
-            False,
-            64,
-            None,
-            ("processes", "serial", 4, False, False),
-            id="auto-large-incompatible-process-shots",
-        ),
-        pytest.param(
-            _SimulationConfig(max_workers=4),
-            "per_shot",
-            True,
-            False,
-            _KernelCapabilities(True, 8, False),
-            False,
-            8,
-            None,
-            ("serial", "adaptive", 4, False, False),
-            id="auto-small-work-adaptive-kernels",
-        ),
-        pytest.param(
-            _SimulationConfig(
-                shot_parallelism="serial",
-                kernel_parallelism="auto",
-                max_workers=4,
-            ),
-            "per_shot",
-            True,
-            False,
-            _KernelCapabilities(True, 8, False),
-            True,
-            64,
-            None,
-            ("serial", "adaptive", 4, False, False),
-            id="serial-shots-use-ordered-adaptive-replay",
-        ),
-        pytest.param(
-            _SimulationConfig(
-                shot_parallelism="serial",
-                kernel_parallelism="threads",
-                max_workers=99,
-            ),
-            "per_shot",
-            True,
-            False,
-            _KernelCapabilities(True, 8, False),
-            True,
-            64,
-            None,
-            ("serial", "threads", 8, False, False),
-            id="serial-shots-forced-threaded-kernels",
-        ),
-        pytest.param(
-            _SimulationConfig(shot_parallelism="threads", kernel_parallelism="serial"),
-            "per_shot",
-            True,
-            False,
-            _KernelCapabilities(True, 8, False),
-            True,
-            64,
-            None,
-            ("threads", "serial", 8, False, True),
-            id="explicit-shot-threads-have-concrete-capacity",
-        ),
-        pytest.param(
-            _SimulationConfig(
-                shot_parallelism="processes",
-                kernel_parallelism="serial",
-                fusion=True,
-            ),
-            "per_shot",
-            True,
-            False,
-            _KernelCapabilities(True, 8, True),
-            False,
-            64,
-            None,
-            ("processes", "serial", 6, True, False),
-            id="explicit-process-shots-resolve-stable-capacity",
-        ),
-        pytest.param(
-            _SimulationConfig(shot_parallelism="serial", kernel_parallelism="serial"),
-            "per_shot",
-            True,
-            False,
-            _KernelCapabilities(True, 8, False),
-            True,
-            64,
-            None,
-            ("serial", "serial", 1, False, True),
-            id="explicit-serial-uses-compatible-compiled-loop",
-        ),
-        pytest.param(
-            _SimulationConfig(max_workers=1),
-            "per_shot",
-            True,
-            False,
-            _KernelCapabilities(True, 8, False),
-            True,
-            64,
-            None,
-            ("serial", "serial", 1, False, True),
-            id="auto-one-worker-uses-serial-compiled-loop",
-        ),
-        pytest.param(
-            _SimulationConfig(shot_parallelism="serial", kernel_parallelism="serial"),
-            "per_shot",
-            True,
-            False,
-            _KernelCapabilities(True, 8, False),
-            True,
-            64,
-            frozenset(),
-            ("serial", "serial", 1, False, False),
-            id="initial-occupancy-disables-compiled-loop",
+            64, LossStep((0,), p=0.1), "python", id="unsupported-step-fallback"
         ),
     ],
 )
-def test_execution_policy_decision_table(
-    simulation,
-    execution_path,
-    counts_requested,
-    state_requested,
-    capabilities,
-    compatible,
-    shots,
-    initial_occupied,
-    expected,
-    monkeypatch,
-):
-    monkeypatch.setattr(
-        "fatqat.simulator._engine._execution_policy.os.process_cpu_count",
-        lambda: 6,
-        raising=False,
-    )
-    policy = _resolve_execution_policy(
-        simulation,
-        execution_path=execution_path,
-        counts_requested=counts_requested,
-        state_requested=state_requested,
-        capabilities=capabilities,
-        compiled_multi_shot_compatible=compatible,
-        supports_process_shots=True,
-        shots=shots,
-        initial_state=_InitialEvolutionState(
-            quantum=None, classical=_InitialClassicalState(occupied=initial_occupied)
+def test_numba_trajectory_workflow_selection(shots, first_step, expected_workflow):
+    from fatqat.simulator._engine.engines.numba_engine import NumbaSVEngine
+
+    # Numerical results alone cannot detect accidentally disabling compilation.
+    policy = NumbaSVEngine()._plan_execution(
+        (first_step, MeasurementStep((0,), (0,))),
+        context=_ExecutionContext(
+            request=_ResultRequest(counts=True, final_state=False),
+            system_dims=(2,),
+            n_clbits=1,
+            shots=shots,
+            seed=None,
         ),
+        simulation_config=_SimulationConfig(max_workers=1),
+        initial_state=_InitialEvolutionState(),
     )
 
-    assert (
-        policy.shot_strategy,
-        policy.kernel_strategy,
-        policy.worker_limit,
-        policy.fusion,
-        policy.use_compiled_multi_shot_kernel,
-    ) == expected
-    assert not (
-        policy.shot_strategy in {"threads", "processes"}
-        and policy.kernel_strategy == "threads"
-    )
-    assert not policy.use_compiled_multi_shot_kernel or (
-        policy.kernel_strategy == "serial"
-    )
+    assert policy.workflow == expected_workflow
 
 
 def test_process_worker_capacity_follows_the_cpu_affinity_mask(monkeypatch):
-    # Before Python 3.13 there is no os.process_cpu_count, and os.cpu_count
-    # counts every core of the machine even when the process may use only a
-    # few (taskset, container CPU limits).
+    from fatqat.simulator._engine.engines.numpy_engine import NumpySVEngine
+
+    # Before Python 3.13, cpu_count ignores process affinity restrictions.
     module = "fatqat.simulator._engine._execution_policy.os"
     monkeypatch.delattr(f"{module}.process_cpu_count", raising=False)
     monkeypatch.setattr(f"{module}.cpu_count", lambda: 192)
     monkeypatch.setattr(
         f"{module}.sched_getaffinity", lambda pid: {4, 5, 6}, raising=False
     )
-    policy = _resolve_execution_policy(
-        _SimulationConfig(shot_parallelism="processes", kernel_parallelism="serial"),
-        execution_path="per_shot",
-        counts_requested=True,
-        state_requested=False,
-        capabilities=_KernelCapabilities(True, 8, True),
-        compiled_multi_shot_compatible=False,
-        supports_process_shots=True,
-        shots=64,
-        initial_state=_InitialEvolutionState(quantum=None),
+    policy = NumpySVEngine()._plan_execution(
+        (ResetStep((0,)), MeasurementStep((0,), (0,))),
+        context=_ExecutionContext(
+            request=_ResultRequest(counts=True, final_state=False),
+            system_dims=(2,),
+            n_clbits=1,
+            shots=64,
+            seed=None,
+        ),
+        simulation_config=_SimulationConfig(
+            shot_parallelism="processes", kernel_parallelism="serial"
+        ),
+        initial_state=_InitialEvolutionState(),
     )
 
     assert policy.worker_limit == 3
 
 
+@pytest.fixture(name="dynamic_program")
+def fixture_dynamic_program():
+    program = fq.Program(1, 1)
+    program.measure(0, 0)
+    program.add(ops.X, 0)
+    return program
+
+
+@pytest.fixture(name="terminal_measurement_program")
+def fixture_terminal_measurement_program():
+    program = fq.Program(1, 1)
+    program.measure(0, 0)
+    return program
+
+
 @pytest.mark.parametrize(
-    (
-        "simulation",
-        "execution_path",
-        "counts_requested",
-        "state_requested",
-        "capabilities",
-        "compatible",
-        "shots",
-        "plan_is_empty",
-        "match",
-    ),
+    "runtime, program_fixture, config, shots, result_config, match",
     [
         pytest.param(
-            _SimulationConfig(shot_parallelism="threads", kernel_parallelism="serial"),
-            "per_shot",
-            True,
-            False,
-            _KernelCapabilities(True, 8, False),
-            True,
+            "numba",
+            "dynamic_program",
+            {"shot_parallelism": "threads"},
             1,
-            False,
+            {"counts": True},
             "at least two shots",
             id="threaded-shots-need-two-shots",
         ),
         pytest.param(
-            _SimulationConfig(shot_parallelism="serial", kernel_parallelism="threads"),
-            "single_pass",
-            False,
-            True,
-            _KernelCapabilities(True, 1, False),
-            False,
-            1,
-            False,
-            "thread capacity of at least two",
-            id="threaded-kernels-need-capacity-for-nonempty-work",
-        ),
-        pytest.param(
-            _SimulationConfig(shot_parallelism="threads", kernel_parallelism="serial"),
-            "per_shot",
-            True,
-            False,
-            _KernelCapabilities(True, 1, False),
-            True,
+            "numpy",
+            "terminal_measurement_program",
+            {"shot_parallelism": "processes"},
             64,
-            False,
-            "thread capacity of at least two",
-            id="threaded-shots-need-capacity",
-        ),
-        pytest.param(
-            _SimulationConfig(
-                shot_parallelism="processes", kernel_parallelism="serial"
-            ),
-            "single_pass",
-            True,
-            False,
-            _KernelCapabilities(True, 8, False),
-            False,
-            64,
-            False,
+            {"counts": True},
             "requires independent per-shot evolution",
             id="parallel-shots-need-per-shot-execution",
         ),
         pytest.param(
-            _SimulationConfig(shot_parallelism="threads", kernel_parallelism="serial"),
-            "per_shot",
-            True,
-            False,
-            _KernelCapabilities(True, 8, False),
-            False,
+            "numpy",
+            "dynamic_program",
+            {"shot_parallelism": "threads"},
             64,
-            False,
-            "compiled multi-shot support from the selected engine",
-            id="threaded-shots-need-compiled-compatibility",
+            {"counts": True},
+            "not supported by the Python workflow",
+            id="python-workflow-rejects-threaded-shots",
         ),
         pytest.param(
-            _SimulationConfig(
-                shot_parallelism="processes", kernel_parallelism="serial"
-            ),
-            "per_shot",
-            True,
-            True,
-            _KernelCapabilities(True, 8, False),
-            False,
+            "numpy",
+            "dynamic_program",
+            {"shot_parallelism": "processes"},
             64,
-            False,
+            {"counts": False, "final_state": False},
             "cannot shard the requested result fields",
-            id="process-shots-need-shardable-results",
+            id="parallel-shots-need-results-to-collect",
         ),
     ],
 )
-def test_execution_policy_rejects_inapplicable_requests(
-    simulation,
-    execution_path,
-    counts_requested,
-    state_requested,
-    capabilities,
-    compatible,
-    shots,
-    plan_is_empty,
-    match,
+def test_run_rejects_inapplicable_shot_parallelism(
+    runtime, program_fixture, config, shots, result_config, match, request
 ):
     with pytest.raises(BackendValidationError, match=match):
-        _resolve_execution_policy(
-            simulation,
-            execution_path=execution_path,
-            counts_requested=counts_requested,
-            state_requested=state_requested,
-            capabilities=capabilities,
-            compiled_multi_shot_compatible=compatible,
-            supports_process_shots=True,
+        Simulator("SV", runtime=runtime).run(
+            request.getfixturevalue(program_fixture),
             shots=shots,
-            initial_state=_InitialEvolutionState(quantum=None),
-            plan_is_empty=plan_is_empty,
-        )
+            simulation_config=config,
+            result_config=result_config,
+        ).result()
 
 
-def test_process_policy_projections():
-    local = _ExecutionPolicy(
-        execution_path="per_shot",
-        shot_strategy="serial",
-        kernel_strategy="adaptive",
-        worker_limit=None,
-        fusion=False,
+@pytest.mark.parametrize("axis", ["kernel_parallelism", "shot_parallelism"])
+def test_run_rejects_threading_without_worker_capacity(
+    monkeypatch, dynamic_program, axis
+):
+    backend = Simulator("SV", runtime="numba")
+    monkeypatch.setattr(
+        backend._engine,
+        "_capabilities",
+        replace(
+            backend._engine.capabilities,
+            kernels=replace(backend._engine.capabilities.kernels, thread_capacity=1),
+        ),
     )
-    process = _ExecutionPolicy(
-        execution_path="per_shot",
-        shot_strategy="processes",
-        kernel_strategy="serial",
-        worker_limit=4,
-        fusion=True,
-    )
-
-    assert _materialization_policy(local) == local
-    assert _materialization_policy(process) == _ExecutionPolicy(
-        execution_path="per_shot",
-        shot_strategy="serial",
-        kernel_strategy="serial",
-        worker_limit=1,
-        fusion=True,
-    )
-    assert _process_child_policy(process) == _ExecutionPolicy(
-        execution_path="per_shot",
-        shot_strategy="serial",
-        kernel_strategy="serial",
-        worker_limit=1,
-        fusion=False,
-    )
+    with pytest.raises(BackendValidationError, match="thread capacity of at least two"):
+        backend.run(
+            dynamic_program, shots=64, simulation_config={axis: "threads"}
+        ).result()
 
 
 def test_run_rejects_non_dict_simulation_config():

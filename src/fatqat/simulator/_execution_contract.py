@@ -24,8 +24,17 @@ class _SimulationConfig:
     kernel_parallelism: Any = "auto"
     max_workers: Any = None
     fusion: Any = False
+    error_handling: str = "raise"
 
     def __post_init__(self) -> None:
+        if not isinstance(self.error_handling, str) or self.error_handling not in {
+            "raise",
+            "capture",
+        }:
+            raise BackendValidationError(
+                f"unsupported error_handling={self.error_handling!r}; expected "
+                "'raise' or 'capture'"
+            )
         if self.seed is not None and (type(self.seed) is not int):
             raise BackendValidationError(
                 f"seed must be an int or None, got {self.seed!r}"
@@ -70,43 +79,11 @@ class _SimulationConfig:
 
 
 @dataclass(frozen=True)
-class _StateVectorResultRequest:
-    """Resolved result fields requested for one statevector execution."""
+class _ResultRequest:
+    """Resolved outputs requested from an engine in its own representation."""
 
     counts: bool
-    statevector: bool
-
-
-@dataclass(frozen=True)
-class _DensityMatrixResultRequest:
-    """Resolved result fields requested for one density-matrix execution."""
-
-    counts: bool
-    density_matrix: bool
-
-
-@dataclass(frozen=True)
-class _UnitaryResultRequest:
-    """Resolved result fields requested for one unitary execution."""
-
-    counts: bool
-    unitary: bool
-
-
-@dataclass(frozen=True)
-class _SuperopResultRequest:
-    """Resolved result fields requested for one super-operator execution."""
-
-    counts: bool
-    superop: bool
-
-
-_ResultRequest = (
-    _StateVectorResultRequest
-    | _DensityMatrixResultRequest
-    | _UnitaryResultRequest
-    | _SuperopResultRequest
-)
+    final_state: bool
 
 
 @dataclass(frozen=True)

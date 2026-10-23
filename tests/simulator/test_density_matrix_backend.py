@@ -190,14 +190,15 @@ def test_dynamic_counts_deterministic_for_fixed_seed():
     assert set(first) <= {"00", "11"}
 
 
-def test_dynamic_counts_process_batches_match_serial():
+@pytest.mark.parametrize("runtime", ["numpy", "numba"])
+def test_dynamic_counts_process_batches_match_serial(runtime):
     p = Program(2, 2)
     p.add(ops.H, 0)
     p.measure(0, 0)
     p.add(ops.X, 1, condition=(0, 1))
     p.measure(1, 1)
     serial = (
-        Simulator("DM", runtime="numpy")
+        Simulator("DM", runtime=runtime)
         .run(
             p,
             shots=40,
@@ -211,7 +212,7 @@ def test_dynamic_counts_process_batches_match_serial():
         .get_counts()
     )
     parallel = (
-        Simulator("DM", runtime="numpy")
+        Simulator("DM", runtime=runtime)
         .run(
             p,
             shots=40,

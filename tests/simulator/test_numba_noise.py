@@ -1,8 +1,8 @@
-"""Unit tests for the Numba channel kernels in ``fatqat.noise.nb``.
+"""Tests for Numba channel arithmetic and compiled noise tables.
 
 White-box, kernel-level: each test pins one kernel against the NumPy
 expression it replaces. End-to-end channel execution through the numba
-runtime lives in tests/backend/test_noise_execution.py.
+runtime lives in tests/simulator/test_noise_execution.py.
 """
 
 import numpy as np
@@ -26,12 +26,16 @@ from fatqat.noise.catalog import (
     pauli_channel_rule,
     phase_damping_rule,
 )
-from fatqat.noise.nb import (
+from fatqat.simulator._engine.workflows.numba_workflow.trajectories import (
     _compile_channel_table,
     _compile_readout_table,
+)
+from fatqat.simulator._engine.numerics.numba_kernels._channel import (
     _jump_branch_kernel,
     _kraus_stack,
     _kraus_superop_kernel,
+)
+from fatqat.simulator._engine.workflows.numba_workflow._reporting import (
     _report_digit_kernel,
 )
 from fatqat.noise.transition_relaxation import transition_relaxation_rule

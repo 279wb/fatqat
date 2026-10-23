@@ -1,17 +1,33 @@
-"""Pure resolution of public matrix controls into one private run policy."""
+"""Request classification, kernel scheduling, and Python workflow scheduling.
+
+Engines select workflows. Kernel scheduling resolves only numerical parallelism;
+Python workflow scheduling owns its shot restrictions and process execution.
+"""
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from .._execution_contract import (
-    _InitialEvolutionState as InitialEvolutionState,
     _SimulationConfig as SimulationConfig,
+    _ExecutionContext as ExecutionContext,
+    _EngineCapabilities as EngineCapabilities,
+    _QuantumCapabilities as QuantumCapabilities,
+    _InitialEvolutionState as InitialEvolutionState,
     _KernelCapabilities as KernelCapabilities,
 )
 from ...errors import BackendValidationError
+from ..._backends.steps import (
+    ApplyChannelStep,
+    LossStep,
+    MeasurementStep,
+    PutStep,
+    ResetStep,
+    ResolvedStep,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,10 +39,81 @@ class _ExecutionPolicy:
     kernel_strategy: Literal["serial", "adaptive", "threads"]
     worker_limit: int | None
     fusion: bool
-    use_compiled_multi_shot_kernel: bool = False
+    # Engine-owned identifier: scheduling preserves it without interpreting it.
+    workflow: str = "python"
 
 
 _PARALLEL_MIN_SHOTS = 32
+
+
+# Request classification and common validation
+
+
+def _select_execution_path(
+    plan: Sequence[ResolvedStep],
+    *,
+    quantum_capabilities: QuantumCapabilities,
+    initial_state: InitialEvolutionState,
+) -> Literal["operator", "single_pass", "per_shot"]:
+    """Classify the required evolution shape from plan and engine semantics."""
+    if quantum_capabilities.is_operator:
+        return "operator"
+    # Only the trajectory executor handles occupancy and erasure reports.
+    if initial_state.classical.occupied is not None:
+        return "per_shot"
+    measured: set[int] = set()
+    for step in plan:
+        if getattr(step, "condition", None) is not None or isinstance(
+            step, (PutStep, LossStep)
+        ):
+            return "per_shot"
+        if isinstance(step, MeasurementStep):
+            if measured.intersection(step.measured_indices):
+                return "per_shot"
+            measured.update(step.measured_indices)
+            continue
+        if isinstance(step, ResetStep):
+            targets = step.reset_indices
+        else:
+            targets = step.target_indices
+        if (
+            isinstance(step, (ResetStep, ApplyChannelStep))
+            and quantum_capabilities.nonunitary_is_stochastic
+        ):
+            return "per_shot"
+        if measured.intersection(targets):
+            return "per_shot"
+    return "single_pass"
+
+
+def _validate_shot_parallelism(
+    simulation_config: SimulationConfig,
+    *,
+    execution_path: Literal["operator", "single_pass", "per_shot"],
+    counts_requested: bool,
+    state_requested: bool,
+    shots: int,
+) -> None:
+    """Validate common constraints for explicit shot parallelism."""
+    shot_request = simulation_config.shot_parallelism
+    if shot_request in {"threads", "processes"}:
+        if execution_path != "per_shot":
+            raise BackendValidationError(
+                f"shot_parallelism={shot_request!r} requires independent "
+                "per-shot evolution"
+            )
+        if shots < 2:
+            raise BackendValidationError(
+                f"shot_parallelism={shot_request!r} requires at least two shots"
+            )
+        if not counts_requested or state_requested:
+            raise BackendValidationError(
+                f"shot_parallelism={shot_request!r} cannot shard the requested "
+                "result fields"
+            )
+
+
+# Worker limits and kernel scheduling
 
 
 def _process_worker_ceiling(requested: int | None) -> int:
@@ -65,158 +152,101 @@ def _adaptive_thread_worker_ceiling(
     return max(1, min(requested, capabilities.thread_capacity))
 
 
-def _materialization_policy(parent: _ExecutionPolicy) -> _ExecutionPolicy:
-    """Project process-shot preparation into local parent execution controls."""
-    if parent.shot_strategy != "processes":
-        return parent
-    return _ExecutionPolicy(
-        execution_path=parent.execution_path,
-        shot_strategy="serial",
-        kernel_strategy="serial",
-        worker_limit=1,
-        fusion=parent.fusion,
-        use_compiled_multi_shot_kernel=False,
-    )
-
-
-def _process_child_policy(parent: _ExecutionPolicy) -> _ExecutionPolicy:
-    """Revoke dispatch and preparation authority in a process child."""
-    assert parent.shot_strategy == "processes"
-    return _ExecutionPolicy(
-        execution_path=parent.execution_path,
-        shot_strategy="serial",
-        kernel_strategy="serial",
-        worker_limit=1,
-        # The parent already materialized any requested fusion into the payload.
-        fusion=False,
-        use_compiled_multi_shot_kernel=False,
-    )
-
-
-def _should_probe_compiled_multi_shot(
-    simulation: SimulationConfig,
+def _resolve_kernel_scheduling(
+    kernel_parallelism: str,
     *,
-    execution_path: Literal["operator", "single_pass", "per_shot"],
-    counts_requested: bool,
-    state_requested: bool,
-    initial_state: InitialEvolutionState,
-) -> bool:
-    """Whether cheap prerequisites justify exact-plan compatibility analysis."""
-    shot_request = simulation.shot_parallelism
-    kernel_request = simulation.kernel_parallelism
-    can_select_compiled = (
-        shot_request == "threads"
-        or (shot_request == "serial" and kernel_request == "serial")
-        or (shot_request == "auto" and kernel_request != "threads")
-    )
-    return (
-        can_select_compiled
-        and execution_path == "per_shot"
-        and counts_requested
-        and not state_requested
-        and initial_state.classical.occupied is None
-    )
-
-
-def _adaptive_kernel_policy(
-    simulation: SimulationConfig,
+    max_workers: int | None,
     capabilities: KernelCapabilities,
-) -> tuple[str, int | None]:
-    """Resolve public kernel auto without reading the active caller mask."""
-    if (
-        not capabilities.supports_kernel_threads
-        or capabilities.thread_capacity < 2
-        or simulation.max_workers == 1
-    ):
-        return "serial", 1
-    return (
-        "adaptive",
-        _adaptive_thread_worker_ceiling(simulation.max_workers, capabilities),
-    )
-
-
-def _resolve_execution_policy(
-    simulation: SimulationConfig,
-    *,
-    execution_path: Literal["operator", "single_pass", "per_shot"],
-    counts_requested: bool,
-    state_requested: bool,
-    capabilities: KernelCapabilities,
-    compiled_multi_shot_compatible: bool,
-    supports_process_shots: bool,
-    shots: int,
-    initial_state: InitialEvolutionState,
-    plan_is_empty: bool = False,
-) -> _ExecutionPolicy:
-    """Resolve validated controls and semantic facts into one final policy."""
-    execution_has_shots = execution_path == "per_shot"
-    shot_shardable = execution_has_shots and counts_requested and not state_requested
-    compiled_eligible = (
-        shot_shardable
-        and initial_state.classical.occupied is None
-        and compiled_multi_shot_compatible
-    )
-    shot_request = simulation.shot_parallelism
-    kernel_request = simulation.kernel_parallelism
-
-    if shot_request in {"threads", "processes"}:
-        if not execution_has_shots:
-            raise BackendValidationError(
-                f"shot_parallelism={shot_request!r} requires independent "
-                "per-shot evolution"
-            )
-        if shots < 2:
-            raise BackendValidationError(
-                f"shot_parallelism={shot_request!r} requires at least two shots"
-            )
-        if not shot_shardable:
-            raise BackendValidationError(
-                f"shot_parallelism={shot_request!r} cannot shard the requested "
-                "result fields"
-            )
-
-    if kernel_request == "threads":
-        assert (
-            capabilities.supports_kernel_threads
-        ), "explicit kernel threads require validated engine capabilities"
-        kernel_workers = _explicit_thread_worker_ceiling(
-            simulation.max_workers, capabilities
-        )
-        if kernel_workers < 2 and not plan_is_empty:
+) -> tuple[Literal["serial", "adaptive", "threads"], int | None]:
+    """Resolve kernel strategy and worker limit without selecting a workflow."""
+    if kernel_parallelism == "threads":
+        workers = _explicit_thread_worker_ceiling(max_workers, capabilities)
+        if workers < 2:
             raise BackendValidationError(
                 "kernel_parallelism='threads' requires an effective thread "
                 "capacity of at least two"
             )
-        kernel_strategy = "threads"
-    elif kernel_request == "auto":
-        kernel_strategy, kernel_workers = _adaptive_kernel_policy(
-            simulation, capabilities
-        )
-    else:
-        kernel_strategy, kernel_workers = "serial", 1
+        return "threads", workers
+    if (
+        kernel_parallelism == "serial"
+        or not capabilities.supports_kernel_threads
+        or capabilities.thread_capacity < 2
+        or max_workers == 1
+    ):
+        return "serial", 1
+    return "adaptive", _adaptive_thread_worker_ceiling(max_workers, capabilities)
 
-    use_compiled = False
 
+def _plan_python_execution(
+    plan: Sequence[ResolvedStep],
+    *,
+    context: ExecutionContext,
+    simulation_config: SimulationConfig,
+    initial_state: InitialEvolutionState,
+    capabilities: EngineCapabilities,
+) -> _ExecutionPolicy:
+    """Classify and schedule execution after an engine selects Python sequencing.
+
+    Local shots run serially; eligible batches may run in processes. Kernel
+    threading follows the selected engine's capabilities and controls.
+    """
+    execution_path = _select_execution_path(
+        plan,
+        quantum_capabilities=capabilities.quantum,
+        initial_state=initial_state,
+    )
+    _validate_shot_parallelism(
+        simulation_config,
+        execution_path=execution_path,
+        counts_requested=context.request.counts,
+        state_requested=context.request.final_state,
+        shots=context.shots,
+    )
+    return _resolve_python_workflow_scheduling(
+        simulation_config,
+        execution_path=execution_path,
+        counts_requested=context.request.counts,
+        state_requested=context.request.final_state,
+        capabilities=capabilities.kernels,
+        supports_process_shots=capabilities.supports_process_shots,
+        shots=context.shots,
+    )
+
+
+def _resolve_python_workflow_scheduling(
+    simulation_config: SimulationConfig,
+    *,
+    execution_path: Literal["operator", "single_pass", "per_shot"],
+    counts_requested: bool,
+    state_requested: bool,
+    capabilities: KernelCapabilities,
+    supports_process_shots: bool,
+    shots: int,
+) -> _ExecutionPolicy:
+    """Schedule the Python workflow over serial or process shots.
+
+    The caller validates common shot constraints. Python sequencing cannot
+    thread independent shots; numerical kernels may use threads within one shot.
+    """
+    execution_has_shots = execution_path == "per_shot"
+    can_parallelize_shots = (
+        execution_has_shots and counts_requested and not state_requested
+    )
+    shot_request = simulation_config.shot_parallelism
+    kernel_request = simulation_config.kernel_parallelism
     if shot_request == "threads":
-        if not compiled_eligible:
-            raise BackendValidationError(
-                "shot_parallelism='threads' requires compiled multi-shot support "
-                "from the selected engine for this plan"
-            )
-        shot_workers = _explicit_thread_worker_ceiling(
-            simulation.max_workers, capabilities
+        raise BackendValidationError(
+            "shot_parallelism='threads' is not supported "
+            "by the Python workflow for this plan"
         )
-        if shot_workers < 2:
-            raise BackendValidationError(
-                "shot_parallelism='threads' requires an effective thread "
-                "capacity of at least two"
-            )
-        shot_strategy = "threads"
-        kernel_strategy = "serial"
-        worker_limit = shot_workers
-        use_compiled = True
-    elif shot_request == "processes":
-        process_workers = _process_worker_ceiling(simulation.max_workers)
+    kernel_strategy, kernel_workers = _resolve_kernel_scheduling(
+        kernel_request,
+        max_workers=simulation_config.max_workers,
+        capabilities=capabilities,
+    )
+
+    if shot_request == "processes":
+        process_workers = _process_worker_ceiling(simulation_config.max_workers)
         if process_workers < 2:
             raise BackendValidationError(
                 "shot_parallelism='processes' requires an effective process "
@@ -225,38 +255,15 @@ def _resolve_execution_policy(
         shot_strategy = "processes"
         kernel_strategy = "serial"
         worker_limit = process_workers
-    elif shot_request == "serial":
+    elif shot_request == "serial" or kernel_request == "threads":
+        # Serial shots or explicit kernel threading leave no process-shot axis.
         shot_strategy = "serial" if execution_has_shots else "none"
-        if kernel_request == "serial" and compiled_eligible:
-            kernel_strategy = "serial"
-            worker_limit = 1
-            use_compiled = True
-        else:
-            worker_limit = kernel_workers
-    elif kernel_request == "threads":
-        # An explicit kernel axis owns the only parallel work in auto/threads.
-        shot_strategy = "serial" if execution_has_shots else "none"
-        kernel_strategy = "threads"
         worker_limit = kernel_workers
-    elif compiled_eligible:
-        shot_workers = _adaptive_thread_worker_ceiling(
-            simulation.max_workers, capabilities
-        )
-        if capabilities.thread_capacity >= 2 and (
-            shot_workers is None or shot_workers > 1
-        ):
-            shot_strategy = "threads"
-            worker_limit = shot_workers
-        else:
-            shot_strategy = "serial"
-            worker_limit = 1
-        kernel_strategy = "serial"
-        use_compiled = True
     else:
-        process_workers = _process_worker_ceiling(simulation.max_workers)
+        process_workers = _process_worker_ceiling(simulation_config.max_workers)
         if (
             supports_process_shots
-            and shot_shardable
+            and can_parallelize_shots
             and shots >= _PARALLEL_MIN_SHOTS
             and process_workers > 1
         ):
@@ -267,12 +274,35 @@ def _resolve_execution_policy(
             shot_strategy = "serial" if execution_has_shots else "none"
             worker_limit = kernel_workers
 
-    assert not use_compiled or kernel_strategy == "serial"
     return _ExecutionPolicy(
         execution_path=execution_path,
         shot_strategy=shot_strategy,
         kernel_strategy=kernel_strategy,
         worker_limit=worker_limit,
-        fusion=simulation.fusion,
-        use_compiled_multi_shot_kernel=use_compiled,
+        fusion=simulation_config.fusion,
+        workflow="python",
+    )
+
+
+# Process-worker policy
+
+
+def _process_child_policy(parent: _ExecutionPolicy) -> _ExecutionPolicy:
+    """Restrict a process worker to serial shots and kernels.
+
+    ``parallel._run_shots_in_processes`` derives this policy once and passes it
+    to every worker batch. Each worker uses it to build numerical bindings and
+    execute its assigned shots through the Python workflow, with either NumPy
+    or Numba kernels. Compiled Numba trajectories and operator workflows do not
+    use this process route.
+
+    Fusion is unsupported on these state-evolution routes. Compiled operator
+    fusion is independent of this policy.
+    """
+    assert parent.shot_strategy == "processes"
+    return replace(
+        parent,
+        shot_strategy="serial",
+        kernel_strategy="serial",
+        worker_limit=1,
     )

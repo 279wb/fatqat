@@ -3,13 +3,13 @@
 import numpy as np
 
 from fatqat.simulator._execution_contract import (
-    _StateVectorResultRequest,
+    _ResultRequest,
     _ExecutionContext,
     _InitialEvolutionState,
 )
 from fatqat._backends.steps import ApplyMatrixStep, MeasurementStep
 from fatqat.implementation.matrices import shift_matrix
-from fatqat.simulator._engine.np import NumpySVEngine
+from fatqat.simulator._engine.engines.numpy_engine import NumpySVEngine
 from fatqat.simulator._engine._execution_policy import _ExecutionPolicy
 
 
@@ -31,7 +31,7 @@ def test_reported_digit_mapping_precedes_confusion_and_feedforward():
         ApplyMatrixStep(matrix=x, target_indices=(1,), condition=((0, 0),)),
     )
     context = _ExecutionContext(
-        request=_StateVectorResultRequest(counts=True, statevector=True),
+        request=_ResultRequest(counts=True, final_state=True),
         system_dims=(3, 2),
         n_clbits=1,
         shots=1,
@@ -50,7 +50,7 @@ def test_reported_digit_mapping_precedes_confusion_and_feedforward():
         n_clbits=context.n_clbits,
         policy=policy,
     )
-    result = engine.execute_local(
+    result = engine.execute_in_process(
         context, payload, policy, initial_state=_InitialEvolutionState()
     )
 
