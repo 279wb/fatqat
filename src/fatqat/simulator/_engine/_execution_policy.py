@@ -13,6 +13,8 @@ from typing import Literal
 
 from .._execution_contract import (
     _SimulationConfig as SimulationConfig,
+    _ExecutionContext as ExecutionContext,
+    _EngineCapabilities as EngineCapabilities,
     _QuantumCapabilities as QuantumCapabilities,
     _InitialEvolutionState as InitialEvolutionState,
     _KernelCapabilities as KernelCapabilities,
@@ -173,6 +175,42 @@ def _resolve_kernel_scheduling(
     ):
         return "serial", 1
     return "adaptive", _adaptive_thread_worker_ceiling(max_workers, capabilities)
+
+
+def _plan_python_execution(
+    plan: Sequence[ResolvedStep],
+    *,
+    context: ExecutionContext,
+    simulation_config: SimulationConfig,
+    initial_state: InitialEvolutionState,
+    capabilities: EngineCapabilities,
+) -> _ExecutionPolicy:
+    """Classify and schedule execution after an engine selects Python sequencing.
+
+    Local shots run serially; eligible batches may run in processes. Kernel
+    threading follows the selected engine's capabilities and controls.
+    """
+    execution_path = _select_execution_path(
+        plan,
+        quantum_capabilities=capabilities.quantum,
+        initial_state=initial_state,
+    )
+    _validate_shot_parallelism(
+        simulation_config,
+        execution_path=execution_path,
+        counts_requested=context.request.counts,
+        state_requested=context.request.final_state,
+        shots=context.shots,
+    )
+    return _resolve_python_workflow_scheduling(
+        simulation_config,
+        execution_path=execution_path,
+        counts_requested=context.request.counts,
+        state_requested=context.request.final_state,
+        capabilities=capabilities.kernels,
+        supports_process_shots=capabilities.supports_process_shots,
+        shots=context.shots,
+    )
 
 
 def _resolve_python_workflow_scheduling(

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from math import prod
+
 import numpy as np
 
 
@@ -42,3 +45,15 @@ def _allocate_superoperator(size: int, initial_state: np.ndarray | None) -> np.n
     """Return the identity map over density-matrix columns."""
     assert initial_state is None, "operator execution has no initial state"
     return np.eye(size * size, dtype=complex)
+
+
+def _export_superoperator(data: np.ndarray, dims: Sequence[int]) -> np.ndarray:
+    """Convert row-stacked superoperator data to public column stacking.
+
+    This vectorization conversion does not reorder subsystems.
+    """
+    size = prod(dims) if dims else 1
+    internal = data.reshape((size,) * 4)
+    exported = np.empty_like(data, order="C")
+    exported.reshape((size,) * 4)[...] = internal.transpose(1, 0, 3, 2)
+    return exported

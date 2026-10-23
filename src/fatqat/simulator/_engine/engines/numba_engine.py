@@ -2,7 +2,7 @@
 
 `NumbaSVEngine` (statevector) and `NumbaDMEngine` (density matrix) reuse
 shared materialization and Python execution from ``MatrixEngine`` and
-initialization from their NumPy twins,
+ndarray initialization and expectations from ``_NdarrayEngine``,
 while replacing numeric kernels with Numba-jitted loops. `NumbaUnitaryEngine`
 and `NumbaSuperopEngine` then reuse *those* kernels for the operator
 representations, with separate preparation for their compiled workflows. All four are reachable via
@@ -112,6 +112,7 @@ from ....errors import BackendValidationError
 from .._execution_policy import (
     _ExecutionPolicy as ExecutionPolicy,
     _resolve_kernel_scheduling,
+    _plan_python_execution,
     _resolve_python_workflow_scheduling,
     _select_execution_path,
     _validate_shot_parallelism,
@@ -149,13 +150,16 @@ from ..numerics.numba_kernels._apply_matrix_to_state import (
     _apply_superoperator_to_state,
 )
 from ..numerics.numpy_kernels._reset import _reset_density_matrix, _reset_superoperator
-from .numpy_engine import (
-    _NumpyOperatorEngine,
-    NumpyDMEngine,
-    NumpySuperopEngine,
-    NumpySVEngine,
-    NumpyUnitaryEngine,
+from .ndarray_engine import _NdarrayEngine
+from ..numerics.numpy_kernels._state import (
+    _allocate_statevector,
+    _allocate_density_matrix,
+    _allocate_unitary,
+    _allocate_superoperator,
+    _export_superoperator,
 )
+from ..numerics.numpy_kernels._channel import _ChannelRouteCache
+from ..numerics.numpy_kernels._reset import _ResetChannelCache
 from ..workflows.python_workflow import _MeasurementKernels, _PythonExecution
 from ..workflows.numba_workflow.operators import (
     _operator_chunks,
@@ -171,7 +175,7 @@ from ..workflows.numba_workflow.trajectories import (
 )
 
 
-class NumbaSVEngine(NumpySVEngine):
+class NumbaSVEngine(_NdarrayEngine):
     """State-vector engine with Numba-jitted numeric kernels."""
 
     _capabilities = _EngineCapabilities(
@@ -272,8 +276,11 @@ class NumbaSVEngine(NumpySVEngine):
             workflow="numba_trajectories",
         )
 
+    _allocate = staticmethod(_allocate_statevector)
+
     def __init__(self, name: str = "numba-sv"):
         super().__init__(name)
+        self._channel_routes = _ChannelRouteCache()
         self._matrix_structures = _MatrixStructureCache()
         self._layout_cache = _ApplyLayoutCache(_build_unitary_apply_layout)
 
@@ -330,7 +337,7 @@ class NumbaSVEngine(NumpySVEngine):
         )
 
     def _retain_step_caches(self, plan: tuple[ResolvedStep, ...]) -> None:
-        super()._retain_step_caches(plan)
+        self._channel_routes.retain(plan)
         self._matrix_structures.retain(plan)
 
     def _execution_scope(self, policy: ExecutionPolicy):
@@ -393,7 +400,7 @@ class NumbaSVEngine(NumpySVEngine):
 # --- density-matrix kernels ---
 
 
-class NumbaDMEngine(NumpyDMEngine):
+class NumbaDMEngine(_NdarrayEngine):
     """Density-matrix engine with Numba-jitted, key-driven numeric kernels.
 
     Binds Numba numerical functions to the shared Python workflow. Execution
@@ -419,6 +426,24 @@ class NumbaDMEngine(NumpyDMEngine):
         ),
         supports_process_shots=True,
     )
+
+    _allocate = staticmethod(_allocate_density_matrix)
+
+    def _plan_execution(
+        self,
+        plan: Sequence[ResolvedStep],
+        *,
+        context: ExecutionContext,
+        simulation_config: SimulationConfig,
+        initial_state: InitialEvolutionState[np.ndarray],
+    ) -> ExecutionPolicy:
+        return _plan_python_execution(
+            plan,
+            context=context,
+            simulation_config=simulation_config,
+            initial_state=initial_state,
+            capabilities=self.capabilities,
+        )
 
     def __init__(self, name: str = "numba-dm"):
         super().__init__(name)
@@ -501,7 +526,7 @@ class _NumbaOperatorExecution(NamedTuple):
     n_chunks: int
 
 
-class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
+class _NumbaOperatorRunMixin:
     """Compiled whole-plan execution for the Numba operator engines.
 
     Leaves declare their capabilities and supply `_operator_row_dims` and
@@ -624,10 +649,7 @@ class _NumbaOperatorRunMixin(_NumpyOperatorEngine):
         raise NotImplementedError
 
 
-# Deep base list by design: the leaf adds only its plan builder and payloads.
-class NumbaUnitaryEngine(  # pylint: disable=too-many-ancestors
-    _NumbaOperatorRunMixin, NumbaSVEngine, NumpyUnitaryEngine
-):
+class NumbaUnitaryEngine(_NumbaOperatorRunMixin, NumbaSVEngine):
     """Unitary engine with Numba-jitted numeric kernels.
 
     ``U`` is ``size`` statevector columns over a row index that decomposes into
@@ -650,6 +672,8 @@ class NumbaUnitaryEngine(  # pylint: disable=too-many-ancestors
         supports_process_shots=False,
     )
 
+    _allocate = staticmethod(_allocate_unitary)
+
     def __init__(self, name: str = "numba-unitary"):
         super().__init__(name)
 
@@ -670,10 +694,7 @@ class NumbaUnitaryEngine(  # pylint: disable=too-many-ancestors
         return payloads
 
 
-# Deep base list by design: the leaf adds only its plan builder and payloads.
-class NumbaSuperopEngine(  # pylint: disable=too-many-ancestors
-    _NumbaOperatorRunMixin, NumbaDMEngine, NumpySuperopEngine
-):
+class NumbaSuperopEngine(_NumbaOperatorRunMixin, NumbaDMEngine):
     """Super-operator engine with Numba-jitted numeric kernels.
 
     ``S`` is ``size**2`` density-matrix columns over a row index that decomposes
@@ -694,8 +715,15 @@ class NumbaSuperopEngine(  # pylint: disable=too-many-ancestors
         supports_process_shots=False,
     )
 
+    _allocate = staticmethod(_allocate_superoperator)
+
     def __init__(self, name: str = "numba-superop"):
         super().__init__(name)
+        self._reset_channels = _ResetChannelCache()
+
+    def export_state(self) -> np.ndarray:
+        """Convert superoperator data to public column stacking."""
+        return _export_superoperator(self.state, self._dims)
 
     def _retain_step_caches(self, plan: tuple[ResolvedStep, ...]) -> None:
         # Reset payloads resolve synthesized channels, not the ResetSteps themselves.

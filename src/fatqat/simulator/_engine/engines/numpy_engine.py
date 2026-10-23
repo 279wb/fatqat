@@ -2,7 +2,7 @@
 
 `NumpySVEngine` (statevector) and `NumpyDMEngine` (density matrix) are the
 two *state* `MatrixEngine` implementations. `MatrixEngine` owns shared plan
-materialization and Python execution; `_NumpyMatrixEngine` supplies NumPy
+materialization and Python execution; `_NdarrayEngine` supplies NumPy
 initialization and expectations. Measurement sequencing uses explicit state
 and runtime-selected numerical functions. Each leaf contributes its numerical
 operations and explicit capabilities. Engine-owned selection determines the
@@ -13,7 +13,7 @@ they compute the program's map rather than a state under it. Each is its state
 twin evolved on many columns at once - a unitary is ``size`` statevector
 columns (column ``j`` is ``U|j>``), a super-operator is ``size**2``
 density-matrix columns (column ``b`` is the image of basis matrix ``E_b``).
-`_NumpyOperatorEngine` rejects sampling; shared execution selects the operator pass.
+Their capabilities reject sampling; shared execution selects the operator pass.
 
 Conventions:
 
@@ -58,14 +58,11 @@ Semantics differences:
 
 from __future__ import annotations
 
-from abc import abstractmethod
 from collections.abc import Sequence
-from math import prod
 from functools import partial
 
 import numpy as np
 
-from ...._expectation import expectation_density_matrix, expectation_statevector
 from ..._execution_contract import (
     _ExecutionContext as ExecutionContext,
     _InitialEvolutionState as InitialEvolutionState,
@@ -80,11 +77,9 @@ from ...._backends.steps import (
 )
 from .._execution_policy import (
     _ExecutionPolicy as ExecutionPolicy,
-    _resolve_python_workflow_scheduling,
-    _select_execution_path,
-    _validate_shot_parallelism,
+    _plan_python_execution,
 )
-from .base import MatrixEngine
+from .ndarray_engine import _NdarrayEngine
 from ..numerics.numpy_kernels._measurement import (
     _statevector_probabilities,
     _density_matrix_probabilities,
@@ -109,6 +104,7 @@ from ..numerics.numpy_kernels._state import (
     _allocate_density_matrix,
     _allocate_unitary,
     _allocate_superoperator,
+    _export_superoperator,
 )
 from ..numerics.numpy_kernels._apply import (
     _apply_matrix_statevector,
@@ -117,112 +113,11 @@ from ..numerics.numpy_kernels._apply import (
     _apply_matrix_superoperator,
 )
 from ..workflows.python_workflow import _MeasurementKernels, _PythonExecution
-from ..state import ClassicalState, EvolutionState
-
-# --- shared NumPy operations ---
-
-
-class _NumpyMatrixEngine(MatrixEngine[np.ndarray]):
-    """NumPy allocation and expectations, with runtime-selected numerical functions.
-
-    Shared plan preparation and workflow invocation come from ``MatrixEngine``.
-    Subclasses supply representation-specific numerical operations.
-    """
-
-    def _plan_execution(
-        self,
-        plan: Sequence[ResolvedStep],
-        *,
-        context: ExecutionContext,
-        simulation_config: SimulationConfig,
-        initial_state: InitialEvolutionState[np.ndarray],
-    ) -> ExecutionPolicy:
-        """Choose Python sequencing with the engine's kernel/process scheduling.
-
-        Local shots run serially; eligible batches may run in processes.
-        Kernel threading follows the concrete engine's capabilities and controls.
-        """
-        execution_path = _select_execution_path(
-            plan,
-            quantum_capabilities=self.capabilities.quantum,
-            initial_state=initial_state,
-        )
-        _validate_shot_parallelism(
-            simulation_config,
-            execution_path=execution_path,
-            counts_requested=context.request.counts,
-            state_requested=context.request.final_state,
-            shots=context.shots,
-        )
-        return _resolve_python_workflow_scheduling(
-            simulation_config,
-            execution_path=execution_path,
-            counts_requested=context.request.counts,
-            state_requested=context.request.final_state,
-            capabilities=self.capabilities.kernels,
-            supports_process_shots=self.capabilities.supports_process_shots,
-            shots=context.shots,
-        )
-
-    def initialize(
-        self,
-        system_dims: Sequence[int],
-        n_clbits: int = 0,
-        *,
-        initial_state: InitialEvolutionState[np.ndarray] | None = None,
-    ) -> None:
-        self.configure_system(system_dims, n_clbits)
-        initial = (
-            initial_state if initial_state is not None else InitialEvolutionState()
-        )
-        quantum = self._allocate(prod(self._dims) if self._dims else 1, initial.quantum)
-        clbits = initial.classical.clbits
-        occupied = initial.classical.occupied
-        self._evolution_state = EvolutionState(
-            quantum,
-            ClassicalState(
-                clbits=None if clbits is None else list(clbits),
-                occupied=None if occupied is None else set(occupied),
-            ),
-        )
-
-    def _expectation_values(
-        self,
-        state: np.ndarray,
-        observables: Sequence[tuple[tuple[float, tuple[tuple[int, str], ...]], ...]],
-        *,
-        policy: ExecutionPolicy,
-    ) -> tuple[float, ...]:
-        kernel = (
-            expectation_statevector
-            if self._state_field == "statevector"
-            else expectation_density_matrix
-        )
-        values = []
-        with self._execution_scope(policy):
-            for terms in observables:
-                kernel_terms = tuple(
-                    (
-                        coefficient,
-                        tuple(
-                            (self.n_subsystems - 1 - index, letter)
-                            for index, letter in factors
-                        ),
-                    )
-                    for coefficient, factors in terms
-                )
-                values.append(kernel(state, kernel_terms))
-        return tuple(values)
-
-    @abstractmethod
-    def _allocate(self, size: int, initial_state: np.ndarray | None) -> np.ndarray:
-        """Return a fresh owned state over ``size`` basis states."""
-
 
 # --- statevector engine ---
 
 
-class NumpySVEngine(_NumpyMatrixEngine):
+class NumpySVEngine(_NdarrayEngine):
     """State-vector engine: evolves ``|psi>`` as a flat little-endian array."""
 
     _capabilities = _EngineCapabilities(
@@ -235,6 +130,22 @@ class NumpySVEngine(_NumpyMatrixEngine):
         ),
         supports_process_shots=True,
     )
+
+    def _plan_execution(
+        self,
+        plan: Sequence[ResolvedStep],
+        *,
+        context: ExecutionContext,
+        simulation_config: SimulationConfig,
+        initial_state: InitialEvolutionState[np.ndarray],
+    ) -> ExecutionPolicy:
+        return _plan_python_execution(
+            plan,
+            context=context,
+            simulation_config=simulation_config,
+            initial_state=initial_state,
+            capabilities=self.capabilities,
+        )
 
     def __init__(self, name: str = "numpy-sv"):
         super().__init__(name)
@@ -269,7 +180,7 @@ class NumpySVEngine(_NumpyMatrixEngine):
 # --- density-matrix engine ---
 
 
-class NumpyDMEngine(_NumpyMatrixEngine):
+class NumpyDMEngine(_NdarrayEngine):
     """Density-matrix engine: evolves ``rho`` as a ``(size, size)`` matrix."""
 
     _capabilities = _EngineCapabilities(
@@ -282,6 +193,22 @@ class NumpyDMEngine(_NumpyMatrixEngine):
         ),
         supports_process_shots=True,
     )
+
+    def _plan_execution(
+        self,
+        plan: Sequence[ResolvedStep],
+        *,
+        context: ExecutionContext,
+        simulation_config: SimulationConfig,
+        initial_state: InitialEvolutionState[np.ndarray],
+    ) -> ExecutionPolicy:
+        return _plan_python_execution(
+            plan,
+            context=context,
+            simulation_config=simulation_config,
+            initial_state=initial_state,
+            capabilities=self.capabilities,
+        )
 
     def __init__(self, name: str = "numpy-dm"):
         super().__init__(name)
@@ -312,15 +239,7 @@ class NumpyDMEngine(_NumpyMatrixEngine):
 # --- operator engines ---
 
 
-class _NumpyOperatorEngine(_NumpyMatrixEngine):
-    """Sampling rejection for NumPy operator representations.
-
-    ``MatrixEngine`` runs their deterministic Python operator workflow;
-    the concrete engines supply operator allocation and numerical operations.
-    """
-
-
-class NumpyUnitaryEngine(_NumpyOperatorEngine, NumpySVEngine):
+class NumpyUnitaryEngine(NumpySVEngine):
     """Unitary engine: evolves ``U`` as a ``(size, size)`` operator matrix.
 
     Column ``j`` of ``U`` is the statevector ``U|j>``, so the whole operator is
@@ -363,7 +282,7 @@ class NumpyUnitaryEngine(_NumpyOperatorEngine, NumpySVEngine):
         )
 
 
-class NumpySuperopEngine(_NumpyOperatorEngine, NumpyDMEngine):
+class NumpySuperopEngine(NumpyDMEngine):
     """Super-operator engine: evolves ``S`` as a ``(size**2, size**2)`` matrix.
 
     Internally, column ``b`` of ``S`` is the row-stacked image of basis matrix
@@ -407,13 +326,5 @@ class NumpySuperopEngine(_NumpyOperatorEngine, NumpyDMEngine):
         )
 
     def export_state(self) -> np.ndarray:
-        """Convert NumPy super-operator data to public column stacking.
-
-        This existing vectorization conversion does not reorder subsystems.
-        """
-        data = self.state
-        size = prod(self._dims) if self._dims else 1
-        internal = data.reshape((size,) * 4)
-        exported = np.empty_like(data, order="C")
-        exported.reshape((size,) * 4)[...] = internal.transpose(1, 0, 3, 2)
-        return exported
+        """Convert superoperator data to public column stacking."""
+        return _export_superoperator(self.state, self._dims)
