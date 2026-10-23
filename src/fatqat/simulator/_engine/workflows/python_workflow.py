@@ -67,6 +67,7 @@ _ChannelKernel = Callable[
 
 
 class _PythonExecution(NamedTuple):
+    # pylint: disable-next=fixme
     # TODO: Consider separate the kernels from the plan
     """Plan and numerical bindings used only by Python sequencing.
 

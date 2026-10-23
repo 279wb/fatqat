@@ -303,7 +303,7 @@ def _apply_channel_statevector(
     rng: np.random.Generator,
     *,
     routes: _ChannelRouteCache,
-    plans: Mapping[tuple[int, ...], tuple],
+    layouts: Mapping[tuple[int, ...], tuple],
 ) -> np.ndarray:
     """Sample a fixed unitary branch or a state-dependent Kraus branch.
 
@@ -320,12 +320,12 @@ def _apply_channel_statevector(
         if matrix is None:
             return state
         return _apply_unclassified_matrix(
-            state, matrix, step.target_indices, plans=plans
+            state, matrix, step.target_indices, layouts=layouts
         )
     branches = np.empty((len(step.kraus_ops), state.shape[0]), dtype=np.complex128)
     for i, kraus in enumerate(step.kraus_ops):
         branches[i] = _apply_unclassified_matrix(
-            state.copy(), kraus, step.target_indices, plans=plans
+            state.copy(), kraus, step.target_indices, layouts=layouts
         )
     return _jump_branch_kernel(branches, float(rng.random()))
 
@@ -337,9 +337,9 @@ def _apply_channel_density_matrix(
     rng: np.random.Generator,
     *,
     superoperators: _SuperoperatorCache,
-    plans: Mapping[tuple[int, ...], tuple],
+    layouts: Mapping[tuple[int, ...], tuple],
 ) -> np.ndarray:
     """Apply the exact channel superoperator without consuming randomness."""
     return _apply_superoperator_to_state(
-        state, step, dims, superoperators=superoperators, plans=plans
+        state, step, dims, superoperators=superoperators, layouts=layouts
     )

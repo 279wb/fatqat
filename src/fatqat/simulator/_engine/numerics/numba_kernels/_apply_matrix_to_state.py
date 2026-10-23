@@ -25,13 +25,13 @@ def _apply_matrix_statevector(
     dims: Sequence[int],
     *,
     structures: _MatrixStructureCache,
-    plans: Mapping[tuple[int, ...], tuple],
+    layouts: Mapping[tuple[int, ...], tuple],
 ) -> np.ndarray:
     """Apply one gate using cached classification and target layout."""
     code, columns, values = structures.resolve(step)
     targets = tuple(step.target_indices)
-    plan = plans[targets]
-    return _apply_matrix(state, step.matrix, plan, code, columns, values)
+    layout = layouts[targets]
+    return _apply_matrix(state, step.matrix, layout, code, columns, values)
 
 
 def _apply_superoperator_to_state(
@@ -40,7 +40,7 @@ def _apply_superoperator_to_state(
     dims: Sequence[int],
     *,
     superoperators: _SuperoperatorCache,
-    plans: Mapping[tuple[int, ...], tuple],
+    layouts: Mapping[tuple[int, ...], tuple],
 ) -> np.ndarray:
     """Apply a cached local superoperator without copying contiguous state.
 
@@ -49,8 +49,8 @@ def _apply_superoperator_to_state(
     """
     superop, code, columns, values, sparse = superoperators.resolve(step)
     targets = tuple(step.target_indices)
-    plan = plans[targets]
-    return _apply_matrix(state, superop, plan, code, columns, values, sparse=sparse)
+    layout = layouts[targets]
+    return _apply_matrix(state, superop, layout, code, columns, values, sparse=sparse)
 
 
 def _apply_unclassified_matrix(
@@ -58,7 +58,7 @@ def _apply_unclassified_matrix(
     matrix: np.ndarray,
     targets: Sequence[int],
     *,
-    plans: Mapping[tuple[int, ...], tuple],
+    layouts: Mapping[tuple[int, ...], tuple],
 ) -> np.ndarray:
     """Classify a bare Kraus matrix once and use the shared matrix launcher."""
     matrix = np.ascontiguousarray(matrix, dtype=np.complex128)
@@ -66,5 +66,5 @@ def _apply_unclassified_matrix(
     values = np.empty(matrix.shape[0], dtype=np.complex128)
     code = int(_classify_matrix(matrix, columns, values))
     targets = tuple(targets)
-    plan = plans[targets]
-    return _apply_matrix(state, matrix, plan, code, columns, values)
+    layout = layouts[targets]
+    return _apply_matrix(state, matrix, layout, code, columns, values)

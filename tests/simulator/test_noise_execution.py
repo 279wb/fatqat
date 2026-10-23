@@ -677,7 +677,7 @@ def test_reduced_diagonal_matches_the_full_reduced_density_matrix():
     engine = NumbaSVEngine()
     engine.initialize(dims, 0)
     for targets in ((0,), (1,), (0, 2), (2, 1)):
-        offsets, comp_strides, comp_dims, _, _ = engine._build_apply_plan(targets)
+        offsets, comp_strides, comp_dims, _, _ = engine._build_apply_layout(targets)
         cosets = size // offsets.shape[0]
         full = _reduced_density(state, offsets, comp_strides, comp_dims, cosets)
         marginal = _reduced_diagonal(state, offsets, comp_strides, comp_dims, cosets)

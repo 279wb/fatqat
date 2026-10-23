@@ -273,7 +273,7 @@ def _apply_sparse_range(
 def _apply_matrix(
     state: np.ndarray,
     matrix: np.ndarray,
-    plan: tuple,
+    layout: tuple,
     code: int,
     columns: np.ndarray,
     values: np.ndarray,
@@ -291,7 +291,7 @@ def _apply_matrix(
     """
     state = np.ascontiguousarray(state, dtype=np.complex128)
     flat = state if state.ndim == 1 else state.reshape(-1)
-    offsets, comp_strides, comp_dims, num_cosets, n_chunks = plan
+    offsets, comp_strides, comp_dims, num_cosets, n_chunks = layout
     indptr = None
     if sparse is not None:
         code = _SPARSE

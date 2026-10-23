@@ -110,6 +110,7 @@ def _apply_superoperator(
 
 
 # --- Python-facing matrix operations ---
+# pylint: disable-next=fixme
 # TODO: Reuse reversed dimensions instead of rebuilding them per gate.
 
 

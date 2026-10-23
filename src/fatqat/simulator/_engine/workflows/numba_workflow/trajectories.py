@@ -229,7 +229,7 @@ def _compile_readout_table(entries: Sequence[tuple]) -> tuple:
 def _compile_dynamic_plan(
     plan: Sequence[ResolvedStep],
     dims: tuple[int, ...],
-    build_apply_plan: Callable[[tuple[int, ...]], tuple],
+    build_apply_layout: Callable[[tuple[int, ...]], tuple],
     resolve_structure: Callable[[ApplyMatrixStep], tuple],
 ) -> _NumbaTrajectoryExecution:
     """Flatten a plan into typed arrays for `_run_sv_trajectories`.
@@ -279,7 +279,7 @@ def _compile_dynamic_plan(
 
     for step in plan:
         if isinstance(step, ApplyMatrixStep):
-            offsets, comp_strides, comp_dims, _, _ = build_apply_plan(
+            offsets, comp_strides, comp_dims, _, _ = build_apply_layout(
                 step.target_indices
             )
             step_kind.append(0)
@@ -321,7 +321,7 @@ def _compile_dynamic_plan(
             readout_entries.append((len(step.measured_indices), step.confusions))
             num_measurements += 1
         elif isinstance(step, ApplyChannelStep):
-            offsets, comp_strides, comp_dims, _, _ = build_apply_plan(
+            offsets, comp_strides, comp_dims, _, _ = build_apply_layout(
                 step.target_indices
             )
             step_kind.append(3)

@@ -21,12 +21,12 @@ from ._apply import _DENSE, _DIAGONAL, _PERMUTATION, _classify_matrix
 # The numerical runtime owns these declarations; the key carries only identity.
 #
 # How kernel selection flows (one classifier, one kernel family):
-#   standard path   apply(step) -> _MatrixStructureCache.resolve(step): a key declared
-#                   _DENSE skips the scan entirely; everything else takes ONE
+#   standard path   _apply_matrix_statevector calls _MatrixStructureCache.resolve.
+#                   A key declared _DENSE skips the scan; everything else takes ONE
 #                   `_classify_matrix` scan at plan preparation, cached per
 #                   step - never per application, never per shot.
-#   fallback path   _apply_local(state, matrix, targets): matrix-only callers
-#                   (noise Kraus branches) - the same single
+#   fallback path   _apply_unclassified_matrix handles bare Kraus matrices:
+#                   the same single
 #                   `_classify_matrix` scan, then the same resolved kernels.
 #   compiled path   _compile_dynamic_plan bakes each gate's resolved code into
 #                   the plan arrays, so the shots kernel never classifies.

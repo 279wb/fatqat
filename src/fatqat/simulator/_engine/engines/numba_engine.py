@@ -17,7 +17,7 @@ density matrix derives its table from the same declarations because the
 Kronecker product preserves structure (see below).
 
 - `NumbaSVEngine` selects Numba gate, measurement, and reset functions
-  and retains the channel matrix fallback (`_apply_local`).
+  and retains the channel matrix fallback (`_apply_unclassified_matrix`).
   Reset uses direct digit shifts shared with the compiled trajectory path.
 - `NumbaDMEngine` selects Numba gate and measurement functions; channels
   share the gate superoperator application. It reuses the *same* coset-walk
@@ -32,7 +32,7 @@ Kronecker product preserves structure (see below).
   the scan, everything else takes one scan of the super-operator, cached per
   step. ``4^n`` is memory-bound and each gate is one pass, so DM parallelizes
   later than the statevector path (`_MIN_SIZE_TO_THREAD_DM`). Reset stays the
-  inherited NumPy partial-trace channel.
+  NumPy partial-trace numerical function.
 
 Kraus arithmetic lives in ``numerics.numba_kernels._channel``. Channel/readout
 packing and classical readout sequencing live in ``workflows.numba_workflow``.
@@ -69,12 +69,12 @@ nopython code - so uniforms are drawn with ``rng`` and the inverse-CDF search
 runs in Numba. This consumes the stream identically to ``rng.choice``, so
 counts stay reproducible per engine (float-summation differences from NumPy
 mean they are not bit-identical across engines - the documented contract,
-see `np.py`).
+see `numpy_engine.py`).
 
 Numba compiles kernels lazily on first call. This module is never imported from
 ``fatqat.simulator._engine``'s ``__init__``; import it explicitly.
 
-Conventions match `np.py`: private little-endian engine indexing (engine
+Conventions match `numpy_engine.py`: private little-endian engine indexing (engine
 subsystem ``q`` has place value ``prod(dims[:q])``) and a local gate matrix
 whose most-significant index digit is ``targets[0]``. The simulator maps public
 subsystems before lowering; reversing an exported buffer here would apply the
@@ -300,13 +300,14 @@ class NumbaSVEngine(_NdarrayEngine):
             if isinstance(step, (ApplyMatrixStep, ApplyChannelStep))
         }
         workers = _kernel_thread_workers(policy) if policy else _MAX_THREADS
-        plans = self._layout_cache.for_targets(
+        layouts = self._layout_cache.for_targets(
             self._dims,
             targets,
             batch_columns=operator,
             max_workers=workers,
             force_parallel=policy is not None and policy.kernel_strategy == "threads",
         )
+        # pylint: disable-next=fixme
         # TODO Those None if operator indicate that the operator path does not support
         # measurements or resets. Should be implemented in the operator engines.
         return _PythonExecution(
@@ -315,13 +316,15 @@ class NumbaSVEngine(_NdarrayEngine):
             apply_matrix=partial(
                 _apply_matrix_statevector,
                 structures=self._matrix_structures,
-                plans=plans,
+                layouts=layouts,
             ),
             apply_channel=(
                 None
                 if operator
                 else partial(
-                    _apply_channel_statevector, routes=self._channel_routes, plans=plans
+                    _apply_channel_statevector,
+                    routes=self._channel_routes,
+                    layouts=layouts,
                 )
             ),
             measurement=(
@@ -360,7 +363,7 @@ class NumbaSVEngine(_NdarrayEngine):
         return _compile_dynamic_plan(
             list(plan),
             self._dims,
-            self._build_apply_plan,
+            self._build_apply_layout,
             self._matrix_structures.resolve,
         )
 
@@ -384,7 +387,7 @@ class NumbaSVEngine(_NdarrayEngine):
             outcome_keys, outcome_counts = reduce_to_counts(rows)
             return RawResult(outcome_keys=outcome_keys, outcome_counts=outcome_counts)
 
-    def _build_apply_plan(
+    def _build_apply_layout(
         self,
         targets: tuple[int, ...],
         *,
@@ -464,7 +467,7 @@ class NumbaDMEngine(_NdarrayEngine):
             if isinstance(step, (ApplyMatrixStep, ApplyChannelStep))
         }
         workers = _kernel_thread_workers(policy) if policy else _MAX_THREADS
-        plans = self._layout_cache.for_targets(
+        layouts = self._layout_cache.for_targets(
             self._dims,
             targets,
             batch_columns=operator,
@@ -477,12 +480,12 @@ class NumbaDMEngine(_NdarrayEngine):
             apply_matrix=partial(
                 _apply_superoperator_to_state,
                 superoperators=self._superoperators,
-                plans=plans,
+                layouts=layouts,
             ),
             apply_channel=partial(
                 _apply_channel_density_matrix,
                 superoperators=self._superoperators,
-                plans=plans,
+                layouts=layouts,
             ),
             measurement=(
                 None

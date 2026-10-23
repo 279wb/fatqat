@@ -53,7 +53,6 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
 
         self._evolution_state: EvolutionState[QuantumDataT] | None = None
         self._dims: tuple[int, ...] = ()
-        self._reversed_dims: tuple[int, ...] = ()
         self._n_clbits = 0
 
     @property
@@ -115,7 +114,7 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
 
     def configure_system(self, system_dims: Sequence[int], n_clbits: int = 0) -> None:
         """Configure dimensions without allocating an evolving state."""
-        self._set_dims(system_dims)
+        self._dims = tuple(int(d) for d in system_dims)
         self._n_clbits = int(n_clbits)
         self._state = None
 
@@ -128,11 +127,6 @@ class MatrixEngine(ABC, Generic[QuantumDataT]):
         initial_state: InitialEvolutionState[QuantumDataT] | None = None,
     ) -> None:
         """Initialize owned quantum and classical storage from validated input."""
-
-    def _set_dims(self, system_dims: Sequence[int]) -> None:
-        """Set ``_dims`` and its cached reverse together, so they never drift apart."""
-        self._dims = tuple(int(d) for d in system_dims)
-        self._reversed_dims = tuple(reversed(self._dims))
 
     def _retain_step_caches(self, plan: tuple[ResolvedStep, ...]) -> None:
         """Retain only the effective plan's identity-keyed step resolutions.
