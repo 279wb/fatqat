@@ -314,7 +314,7 @@ def test_fuse_gate_channels_merges_an_adjacent_same_target_pair():
     assert np.allclose(fused[0].kraus_ops[1], k1 @ m)
 
 
-def test_plan_chunks_floor_scales_with_thread_count():
+def test_choose_chunk_count_floor_scales_with_thread_count():
     # The parallel floor is per-thread (`_MAX_THREADS * _GRAIN_TO_THREAD`), so a
     # state stays serial just below it and splits across threads at it - the
     # absolute crossover tracks the core count, not a fixed size.
@@ -322,20 +322,20 @@ def test_plan_chunks_floor_scales_with_thread_count():
         _GRAIN_TO_THREAD,
         _MAX_THREADS,
         _MIN_SIZE_TO_THREAD,
-        _plan_chunks,
+        _choose_chunk_count,
     )
 
     assert _MIN_SIZE_TO_THREAD == _MAX_THREADS * _GRAIN_TO_THREAD
     cosets = _MIN_SIZE_TO_THREAD  # >> _MAX_THREADS, so the chunk count is thread-bound
-    assert _plan_chunks(cosets, _MIN_SIZE_TO_THREAD - 1) == 1
-    assert _plan_chunks(cosets, _MIN_SIZE_TO_THREAD) == min(_MAX_THREADS, cosets)
+    assert _choose_chunk_count(cosets, _MIN_SIZE_TO_THREAD - 1) == 1
+    assert _choose_chunk_count(cosets, _MIN_SIZE_TO_THREAD) == min(_MAX_THREADS, cosets)
 
 
 def test_coset_chunking_is_bit_identical_across_chunk_counts():
     # The floor only ever changes the chunk COUNT; disjoint cosets make the
     # result independent of it, which is why moving the floor never changes an
     # amplitude. A dense gate applied as one chunk equals it applied as many.
-    from fatqat.simulator._engine.numerics.numba._layouts import _compute_apply_plan
+    from fatqat.simulator._engine.numerics.numba._layouts import _build_apply_layout
     from fatqat.simulator._engine.numerics.numba._apply import (
         _apply_resolved_parallel,
         _apply_resolved_serial,
@@ -352,7 +352,7 @@ def test_coset_chunking_is_bit_identical_across_chunk_counts():
     columns = np.empty(2, dtype=np.int64)
     values = np.empty(2, dtype=np.complex128)
     code = int(_classify_matrix(matrix, columns, values))
-    offsets, comp_strides, comp_dims, num_cosets, _ = _compute_apply_plan(
+    offsets, comp_strides, comp_dims, num_cosets, _ = _build_apply_layout(
         (2,) * 6, (0,)
     )
 

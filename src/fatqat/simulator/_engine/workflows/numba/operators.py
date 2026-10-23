@@ -14,7 +14,7 @@ from ...numerics.numba._operator import (
     _apply_permutation_columns,
     _apply_sparse_columns,
 )
-from ...numerics.numba._layouts import _compute_apply_plan
+from ...numerics.numba._layouts import _build_apply_layout
 
 # --- compiled whole-plan operator kernels (one parallel region) ---
 #
@@ -178,7 +178,7 @@ def _pack_operator_plan(
     scratch_rows = 1
 
     for s, (matrix, step_code, columns, values, sparse, targets) in enumerate(payloads):
-        offsets, strides, dims, cosets, _ = _compute_apply_plan(row_dims, targets)
+        offsets, strides, dims, cosets, _ = _build_apply_layout(row_dims, targets)
         local_dim = int(offsets.shape[0])
         off_parts.append(offsets * n_columns)
         comp_stride_parts.append(strides * n_columns)

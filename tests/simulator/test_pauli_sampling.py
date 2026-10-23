@@ -310,7 +310,7 @@ def test_pauli_sampling_does_not_change_the_per_shot_draw_budget():
     pytest.importorskip("numba")
     from functools import partial
 
-    from fatqat.simulator._engine.numerics.numba._layouts import _compute_apply_plan
+    from fatqat.simulator._engine.numerics.numba._layouts import _build_apply_layout
     from fatqat.simulator._engine.numerics.numba._preparation import (
         _MatrixStructureCache,
     )
@@ -325,7 +325,7 @@ def test_pauli_sampling_does_not_change_the_per_shot_draw_budget():
     _, max_draws = _compile_dynamic_plan(
         plan,
         dims,
-        partial(_compute_apply_plan, dims),
+        partial(_build_apply_layout, dims),
         _MatrixStructureCache().resolve,
     )
 

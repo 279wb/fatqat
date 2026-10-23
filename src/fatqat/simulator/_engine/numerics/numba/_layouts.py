@@ -30,7 +30,7 @@ _MIN_SIZE_TO_THREAD = _MAX_THREADS * _GRAIN_TO_THREAD
 _MIN_SIZE_TO_THREAD_DM = _MAX_THREADS * _GRAIN_TO_THREAD_DM
 
 
-def _plan_chunks(
+def _choose_chunk_count(
     num_cosets: int,
     size: int,
     min_parallel_size: int = _MIN_SIZE_TO_THREAD,
@@ -50,7 +50,7 @@ def _plan_chunks(
     return max(1, min(max_workers, num_cosets))
 
 
-def _compute_apply_plan(
+def _build_apply_layout(
     dims: Sequence[int],
     targets: Sequence[int],
     min_parallel_size: int = _MIN_SIZE_TO_THREAD,
@@ -91,7 +91,7 @@ def _compute_apply_plan(
     comp_dims = np.array([dims[q] for q in complement], dtype=np.int64)
     size = prod(dims)
     num_cosets = size // local_dim
-    n_chunks = _plan_chunks(
+    n_chunks = _choose_chunk_count(
         num_cosets,
         size,
         min_parallel_size,
@@ -101,7 +101,7 @@ def _compute_apply_plan(
     return offsets, comp_strides, comp_dims, num_cosets, n_chunks
 
 
-def _measured_layout(
+def _build_measurement_layout(
     dims: Sequence[int], subsystems: Sequence[int]
 ) -> tuple[np.ndarray, np.ndarray]:
     """Flat strides and dimensions of the measured subsystems for the kernels."""
@@ -126,7 +126,7 @@ def _build_unitary_apply_layout(
     if batch_columns:
         dims = (prod(dims),) + tuple(dims)
         targets = tuple(1 + target for target in targets)
-    return _compute_apply_plan(
+    return _build_apply_layout(
         dims, targets, max_workers=max_workers, force_parallel=force_parallel
     )
 
@@ -154,7 +154,7 @@ def _build_superoperator_apply_layout(
     super_targets = tuple(shift + n + t for t in targets) + tuple(
         shift + t for t in targets
     )
-    return _compute_apply_plan(
+    return _build_apply_layout(
         row_dims,
         super_targets,
         _MIN_SIZE_TO_THREAD_DM,
@@ -188,7 +188,7 @@ class _ApplyLayoutCache:
     ) -> dict[tuple[int, ...], tuple]:
         """Reuse matching layouts and build the missing ones for this binding."""
         entries = {}
-        plans = {}
+        layouts = {}
         for target in targets:
             key = (dims, target, batch_columns, max_workers, force_parallel)
             layout = self._entries.get(key)
@@ -201,6 +201,6 @@ class _ApplyLayoutCache:
                     force_parallel=force_parallel,
                 )
             entries[key] = layout
-            plans[target] = layout
+            layouts[target] = layout
         self._entries = entries
-        return plans
+        return layouts

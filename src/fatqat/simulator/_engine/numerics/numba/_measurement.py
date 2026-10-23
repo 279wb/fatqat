@@ -8,7 +8,7 @@ from math import sqrt
 import numpy as np
 from numba import njit
 
-from ._layouts import _measured_layout
+from ._layouts import _build_measurement_layout
 
 # --- shared sampling ---
 
@@ -246,7 +246,7 @@ def _project_density_matrix_strided(
 def _project_statevector(
     state: np.ndarray, index: int, indices: Sequence[int], dims: Sequence[int]
 ) -> np.ndarray:
-    strides, measured_dims = _measured_layout(dims, indices)
+    strides, measured_dims = _build_measurement_layout(dims, indices)
     return _project_statevector_strided(
         np.ascontiguousarray(state), strides, measured_dims, index
     )
@@ -255,7 +255,7 @@ def _project_statevector(
 def _project_density_matrix(
     state: np.ndarray, index: int, indices: Sequence[int], dims: Sequence[int]
 ) -> np.ndarray:
-    strides, measured_dims = _measured_layout(dims, indices)
+    strides, measured_dims = _build_measurement_layout(dims, indices)
     return _project_density_matrix_strided(
         np.ascontiguousarray(state), strides, measured_dims, index
     )
@@ -278,7 +278,7 @@ def _reset_statevector(
 ) -> np.ndarray:
     """Reset one sampled branch using the fused Numba projection/shift kernel."""
     assert len(indices) >= 1, "reset_subsystems requires at least one index"
-    strides, measured_dims = _measured_layout(dims, indices)
+    strides, measured_dims = _build_measurement_layout(dims, indices)
     return _sv_reset_kernel(
         np.ascontiguousarray(state), strides, measured_dims, float(rng.random())
     )
