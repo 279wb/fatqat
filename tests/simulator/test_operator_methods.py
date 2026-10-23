@@ -380,7 +380,7 @@ def test_numpy_and_numba_runtimes_agree(method):
 
 def _numba_engines():
     pytest.importorskip("numba")
-    from fatqat.simulator._engine.engines import numba as nb
+    from fatqat.simulator._engine.engines import numba_engine as nb
 
     return nb
 
@@ -525,7 +525,7 @@ def test_gate_fusion_collapses_whole_runs(name, expected_steps):
 def test_gate_fusion_keeps_a_diagonal_run_diagonal():
     """A run of phase gates stays on the in-place diagonal kernel, at any width."""
     nb = _numba_engines()
-    from fatqat.simulator._engine.numerics.numba._apply import _DIAGONAL
+    from fatqat.simulator._engine.numerics.numba_kernels._apply import _DIAGONAL
 
     backend = Simulator("unitary", runtime="numba")
     program = Program(4)
@@ -636,7 +636,7 @@ def test_empty_program_returns_the_identity(method, runtime):
 def test_fused_superop_covers_every_structure_code():
     """Diagonal, permutation, dense, and CSR-sparse steps in one packed plan."""
     _numba_engines()
-    from fatqat.simulator._engine.workflows.numba import operators
+    from fatqat.simulator._engine.workflows.numba_workflow import operators
 
     program = Program(2)
     program.add(ops.RZ(0.4), 0)  # diagonal super-operator

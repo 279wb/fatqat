@@ -17,7 +17,10 @@ from fatqat._backends.steps import (
     PutStep,
     ResetStep,
 )
-from fatqat.simulator._engine.engines.numpy import NumpySVEngine, NumpyUnitaryEngine
+from fatqat.simulator._engine.engines.numpy_engine import (
+    NumpySVEngine,
+    NumpyUnitaryEngine,
+)
 from fatqat.errors import BackendValidationError
 from fatqat.simulator._engine._execution_policy import _ExecutionPolicy
 
@@ -73,7 +76,10 @@ def _run(
 @pytest.mark.parametrize("density_matrix", [False, True])
 def test_execution_survives_layout_changes(density_matrix):
     pytest.importorskip("numba")
-    from fatqat.simulator._engine.engines.numba import NumbaSVEngine, NumbaDMEngine
+    from fatqat.simulator._engine.engines.numba_engine import (
+        NumbaSVEngine,
+        NumbaDMEngine,
+    )
 
     engine = NumbaDMEngine() if density_matrix else NumbaSVEngine()
     # Flip the first local target; target order and mixed dimensions determine
@@ -117,7 +123,7 @@ def test_execution_survives_layout_changes(density_matrix):
 
 @pytest.mark.parametrize("with_loss", [False, True])
 def test_numba_trajectory_execution_handles_supported_and_fallback_plans(with_loss):
-    from fatqat.simulator._engine.engines.numba import NumbaSVEngine
+    from fatqat.simulator._engine.engines.numba_engine import NumbaSVEngine
 
     plan = (ResetStep((0,)),)
     if with_loss:
@@ -186,7 +192,7 @@ def test_engine_fast_counts_and_state_share_collapse_event():
 )
 def test_occupancy_loss_reload_and_feedback_start_fresh(runtime, occupied, reported):
     if runtime == "numba":
-        from fatqat.simulator._engine.engines.numba import NumbaSVEngine
+        from fatqat.simulator._engine.engines.numba_engine import NumbaSVEngine
 
         engine = NumbaSVEngine()
     else:
@@ -246,7 +252,7 @@ def test_initial_register_drives_feedback_and_is_fresh_per_shot(mode):
     if mode == "numpy":
         engine = NumpySVEngine()
     else:
-        from fatqat.simulator._engine.engines.numba import NumbaSVEngine
+        from fatqat.simulator._engine.engines.numba_engine import NumbaSVEngine
 
         engine = NumbaSVEngine()
     initial = _InitialEvolutionState(
@@ -343,7 +349,7 @@ def test_operator_engine_accepts_absent_classical_components():
 
 
 def test_numba_initial_occupancy_preserves_erased_measurement():
-    from fatqat.simulator._engine.engines.numba import NumbaSVEngine
+    from fatqat.simulator._engine.engines.numba_engine import NumbaSVEngine
 
     engine = NumbaSVEngine()
     plan = (ResetStep((0,)), MeasurementStep((0,), (0,)))

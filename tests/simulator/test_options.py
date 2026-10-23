@@ -247,7 +247,7 @@ def test_engine_quantum_support_controls_early_validation(monkeypatch, operation
     ],
 )
 def test_numba_trajectory_workflow_selection(shots, first_step, expected_workflow):
-    from fatqat.simulator._engine.engines.numba import NumbaSVEngine
+    from fatqat.simulator._engine.engines.numba_engine import NumbaSVEngine
 
     # Numerical results alone cannot detect accidentally disabling compilation.
     policy = NumbaSVEngine()._plan_execution(
@@ -267,7 +267,7 @@ def test_numba_trajectory_workflow_selection(shots, first_step, expected_workflo
 
 
 def test_process_worker_capacity_follows_the_cpu_affinity_mask(monkeypatch):
-    from fatqat.simulator._engine.engines.numpy import NumpySVEngine
+    from fatqat.simulator._engine.engines.numpy_engine import NumpySVEngine
 
     # Before Python 3.13, cpu_count ignores process affinity restrictions.
     module = "fatqat.simulator._engine._execution_policy.os"

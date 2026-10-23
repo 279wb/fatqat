@@ -23,16 +23,19 @@ from fatqat.simulator._engine._execution_policy import _ExecutionPolicy
 numba = pytest.importorskip("numba")
 
 # pylint: disable=wrong-import-position  # these need the importorskip above
-from fatqat.simulator._engine.engines.numba import (
+from fatqat.simulator._engine.engines.numba_engine import (
     _fuse_gate_channels,
     NumbaSVEngine,
 )
-from fatqat.simulator._engine.numerics.numba._apply import _DENSE, _classify_matrix
-from fatqat.simulator._engine.numerics.numba._preparation import (
+from fatqat.simulator._engine.numerics.numba_kernels._apply import (
+    _DENSE,
+    _classify_matrix,
+)
+from fatqat.simulator._engine.numerics.numba_kernels._matrix_cache import (
     _KERNEL_SPECS,
     _superop_csr,
 )
-from fatqat.simulator._engine.engines.numpy import NumpySVEngine
+from fatqat.simulator._engine.engines.numpy_engine import NumpySVEngine
 from fatqat.noise import Depolarizing
 from fatqat.noise.catalog import depolarizing_rule
 from fatqat.noise.nb import _kraus_stack, _kraus_superop_kernel
@@ -249,7 +252,7 @@ def test_deterministic_channel_matches_equivalent_gate():
 
 
 def test_structure_cache_retains_source_until_plan_pruned():
-    from fatqat.simulator._engine.numerics.numba._preparation import (
+    from fatqat.simulator._engine.numerics.numba_kernels._matrix_cache import (
         _MatrixStructureCache,
     )
 
@@ -318,7 +321,7 @@ def test_choose_chunk_count_floor_scales_with_thread_count():
     # The parallel floor is per-thread (`_MAX_THREADS * _GRAIN_TO_THREAD`), so a
     # state stays serial just below it and splits across threads at it - the
     # absolute crossover tracks the core count, not a fixed size.
-    from fatqat.simulator._engine.numerics.numba._layouts import (
+    from fatqat.simulator._engine.numerics.numba_kernels._layouts import (
         _GRAIN_TO_THREAD,
         _MAX_THREADS,
         _MIN_SIZE_TO_THREAD,
@@ -335,8 +338,10 @@ def test_coset_chunking_is_bit_identical_across_chunk_counts():
     # The floor only ever changes the chunk COUNT; disjoint cosets make the
     # result independent of it, which is why moving the floor never changes an
     # amplitude. A dense gate applied as one chunk equals it applied as many.
-    from fatqat.simulator._engine.numerics.numba._layouts import _build_apply_layout
-    from fatqat.simulator._engine.numerics.numba._apply import (
+    from fatqat.simulator._engine.numerics.numba_kernels._layouts import (
+        _build_apply_layout,
+    )
+    from fatqat.simulator._engine.numerics.numba_kernels._apply import (
         _apply_resolved_parallel,
         _apply_resolved_serial,
     )

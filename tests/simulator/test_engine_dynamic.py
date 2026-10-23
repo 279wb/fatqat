@@ -5,12 +5,12 @@ from fatqat.program import Program
 from fatqat.simulator import Simulator
 import fatqat.operations as ops
 from fatqat.simulator._engine.state import EvolutionState
-from fatqat.simulator._engine.numerics.numpy._measurement import (
+from fatqat.simulator._engine.numerics.numpy_kernels._measurement import (
     _statevector_probabilities,
     _project_statevector,
     _sample_basis_indices,
 )
-from fatqat.simulator._engine.workflows.python import (
+from fatqat.simulator._engine.workflows.python_workflow import (
     _MeasurementKernels,
     _measure_subsystems,
 )
@@ -20,11 +20,13 @@ from fatqat.simulator._engine.workflows.python import (
 def fixture_sv_reset(request):
     if request.param == "numba":
         pytest.importorskip("numba")
-        from fatqat.simulator._engine.numerics.numba._measurement import (
+        from fatqat.simulator._engine.numerics.numba_kernels._measurement import (
             _reset_statevector,
         )
     else:
-        from fatqat.simulator._engine.numerics.numpy._state import _reset_statevector
+        from fatqat.simulator._engine.numerics.numpy_kernels._state import (
+            _reset_statevector,
+        )
     return _reset_statevector
 
 

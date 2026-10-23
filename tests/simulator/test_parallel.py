@@ -5,7 +5,7 @@ from threading import Lock
 import fatqat as fq
 import fatqat.operations as ops
 from fatqat.simulator import Simulator
-from fatqat.simulator._engine.engines.numpy import NumpySVEngine
+from fatqat.simulator._engine.engines.numpy_engine import NumpySVEngine
 
 
 def _random_dynamic_program():

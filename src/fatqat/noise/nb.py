@@ -18,14 +18,14 @@ digit is resampled through a column-stochastic confusion matrix
 Plus `_compile_channel_table` and `_compile_readout_table`, which flatten a
 plan's channel occurrences and per-measurement confusion matrices into the
 typed arrays the compiled multi-shot loop in
-``simulator._engine.workflows.numba.trajectories`` walks.
+``simulator._engine.workflows.numba_workflow.trajectories`` walks.
 
-Division of labour with ``simulator._engine.engines.numba``, and why it runs this way: *applying*
+Division of labour with ``simulator._engine.engines.numba_engine``, and why it runs this way: *applying*
 a local matrix is representation machinery and stays there (one coset-walk
 kernel family, shared by gates, reset shifts, and Kraus operators alike), so
 `_jump_branch_kernel` takes the branch stack *already produced* by that
 primitive and only does the channel-specific part. This keeps the dependency
-one-directional - ``simulator._engine.engines.numba`` imports this module, never the reverse.
+one-directional - ``simulator._engine.engines.numba_engine`` imports this module, never the reverse.
 That direction is forced, not stylistic: a Numba function resolves the njit
 callees in its body as module globals at compile time, so the compiled shots
 kernel cannot reach a channel kernel it does not import at module scope, and
@@ -34,9 +34,9 @@ importing back would cycle.
 Numba compiles kernels lazily on first call. This module is never imported from
 ``fatqat.noise``'s package ``__init__``; import it explicitly
 (``from fatqat.noise.nb import ...``), exactly as
-``fatqat.simulator._engine.engines.numba`` is treated.
+``fatqat.simulator._engine.engines.numba_engine`` is treated.
 
-Conventions match ``simulator._engine.engines.numpy`` / ``simulator._engine.engines.numba``: private
+Conventions match ``simulator._engine.engines.numpy_engine`` / ``simulator._engine.engines.numba_engine``: private
 little-endian engine indexing, and a local Kraus matrix whose most-significant
 index digit is ``target_indices[0]``. Public subsystems are mapped before this
 module receives a step; no result-side reversal belongs in these kernels.
@@ -86,9 +86,9 @@ def _inverse_cdf_pick(
     per entry, and a cdf is non-decreasing, so this is bit-identical to
     bisecting the array.
 
-    ``simulator._engine.engines.numba`` has the same two steps for basis-index sampling. It is
+    ``simulator._engine.engines.numba_engine`` has the same two steps for basis-index sampling. It is
     duplicated rather than imported: this module must not import from
-    ``simulator._engine.engines.numba`` (see the module docstring on the forced direction).
+    ``simulator._engine.engines.numba_engine`` (see the module docstring on the forced direction).
     """
     n = probabilities.shape[0]
     total = 0.0

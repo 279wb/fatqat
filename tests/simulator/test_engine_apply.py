@@ -6,7 +6,7 @@ import pytest
 import fatqat as fq
 import fatqat.operations as ops
 from fatqat.simulator import Simulator
-from fatqat.simulator._engine.engines.numpy import NumpySVEngine
+from fatqat.simulator._engine.engines.numpy_engine import NumpySVEngine
 from fatqat._backends.steps import ApplyMatrixStep
 from fatqat.implementation.matrices import shift_matrix
 

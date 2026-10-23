@@ -7,14 +7,14 @@ from numba import njit, prange
 
 from ..._execution_policy import _ExecutionPolicy as ExecutionPolicy
 from ..._numba_scope import _kernel_thread_workers
-from ...numerics.numba._apply import _DENSE, _DIAGONAL, _PERMUTATION, _SPARSE
-from ...numerics.numba._operator import (
+from ...numerics.numba_kernels._apply import _DENSE, _DIAGONAL, _PERMUTATION, _SPARSE
+from ...numerics.numba_kernels._operator import (
     _apply_dense_columns,
     _apply_diagonal_columns,
     _apply_permutation_columns,
     _apply_sparse_columns,
 )
-from ...numerics.numba._layouts import _build_apply_layout
+from ...numerics.numba_kernels._layouts import _build_apply_layout
 
 # --- compiled whole-plan operator kernels (one parallel region) ---
 #

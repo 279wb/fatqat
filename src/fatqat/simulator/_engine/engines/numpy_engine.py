@@ -85,14 +85,14 @@ from .._execution_policy import (
     _validate_shot_parallelism,
 )
 from .base import MatrixEngine
-from ..numerics.numpy._measurement import (
+from ..numerics.numpy_kernels._measurement import (
     _statevector_probabilities,
     _density_matrix_probabilities,
     _project_statevector,
     _project_density_matrix,
     _sample_basis_indices,
 )
-from ..numerics.numpy._state import (
+from ..numerics.numpy_kernels._state import (
     _apply_channel_statevector,
     _apply_channel_density_matrix,
     _apply_channel_superoperator,
@@ -110,7 +110,7 @@ from ..numerics.numpy._state import (
     _reset_statevector,
     _reset_superoperator,
 )
-from ..workflows.python import _MeasurementKernels, _PythonExecution
+from ..workflows.python_workflow import _MeasurementKernels, _PythonExecution
 from ..state import ClassicalState, EvolutionState
 
 # --- shared NumPy operations ---

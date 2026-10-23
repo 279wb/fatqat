@@ -168,7 +168,7 @@ def test_sampled_unitary_route_reproduces_the_jump_route_exactly(runtime, monkey
     sampled = _counts(runtime, noise, program)
 
     monkeypatch.setattr(
-        "fatqat.simulator._engine.numerics.numpy._state._sampled_unitary_branches",
+        "fatqat.simulator._engine.numerics.numpy_kernels._state._sampled_unitary_branches",
         lambda _kraus_ops: None,
     )
     if runtime == "numba":
@@ -310,11 +310,13 @@ def test_pauli_sampling_does_not_change_the_per_shot_draw_budget():
     pytest.importorskip("numba")
     from functools import partial
 
-    from fatqat.simulator._engine.numerics.numba._layouts import _build_apply_layout
-    from fatqat.simulator._engine.numerics.numba._preparation import (
+    from fatqat.simulator._engine.numerics.numba_kernels._layouts import (
+        _build_apply_layout,
+    )
+    from fatqat.simulator._engine.numerics.numba_kernels._matrix_cache import (
         _MatrixStructureCache,
     )
-    from fatqat.simulator._engine.workflows.numba.trajectories import (
+    from fatqat.simulator._engine.workflows.numba_workflow.trajectories import (
         _compile_dynamic_plan,
     )
 

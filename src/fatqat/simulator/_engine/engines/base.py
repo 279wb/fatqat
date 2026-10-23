@@ -30,7 +30,7 @@ from .._execution_policy import (
 )
 from ..parallel import _run_shots_in_processes
 from ..state import EvolutionState, QuantumDataT
-from ..workflows.python import (
+from ..workflows.python_workflow import (
     _PythonExecution,
     _run_operator_plan,
     _run_single_pass,

@@ -28,9 +28,9 @@ from ...._execution_contract import (
     _ExecutionContext as ExecutionContext,
     _InitialEvolutionState as InitialEvolutionState,
 )
-from ...numerics.numba._apply import _DENSE, _apply_resolved_range
-from ...numerics.numba._channel import _apply_channel_step
-from ...numerics.numba._measurement import (
+from ...numerics.numba_kernels._apply import _DENSE, _apply_resolved_range
+from ...numerics.numba_kernels._channel import _apply_channel_step
+from ...numerics.numba_kernels._measurement import (
     _sample_index_kernel,
     _sv_probabilities_kernel,
     _project_statevector_strided,

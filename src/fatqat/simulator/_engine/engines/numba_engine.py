@@ -52,13 +52,13 @@ bit-for-bit.
 The operator engines do not apply gates one at a time. An operator buffer is
 ``(rows, columns)`` and every step acts on the row index alone, so columns are
 independent and a whole plan runs inside one parallel region split over column
-blocks (``workflows.numba.operators``). Those loops keep the per-step
+blocks (``workflows.numba_workflow.operators``). Those loops keep the per-step
 accumulation order, so they are bit-identical to the per-gate coset kernels.
 When ``fusion=True`` is requested for a supported method, a sufficiently large
 plan may merge adjacent operator payloads into wider ones. That rewrite is
 equal to the unfused plan only to floating-point tolerance.
 
-Shot threading uses the compiled loop in ``workflows.numba.trajectories``, while kernel
+Shot threading uses the compiled loop in ``workflows.numba_workflow.trajectories``, while kernel
 threading partitions state amplitudes or cosets, or operator columns. Serial
 inner kernels use one Numba thread unless the compiled shot loop owns the outer
 pool. Process-backed replay uses a one-thread child policy, so process and Numba
@@ -119,12 +119,12 @@ from .._execution_policy import (
     _adaptive_thread_worker_ceiling,
 )
 from .._numba_scope import _kernel_thread_workers, _thread_scope
-from ..numerics.numba._fusion import (
+from ..numerics.numba_kernels._fusion import (
     _MIN_SIZE_TO_FUSE,
     _fuse_gate_channels,
     _fuse_operator_payloads,
 )
-from ..numerics.numba._measurement import (
+from ..numerics.numba_kernels._measurement import (
     _sv_probabilities_kernel,
     _dm_probabilities_kernel,
     _project_statevector,
@@ -132,38 +132,38 @@ from ..numerics.numba._measurement import (
     _sample_basis_indices,
     _reset_statevector,
 )
-from ..numerics.numba._preparation import (
+from ..numerics.numba_kernels._matrix_cache import (
     _MatrixStructureCache,
     _SuperoperatorCache,
 )
-from ..numerics.numba._layouts import (
+from ..numerics.numba_kernels._layouts import (
     _MAX_THREADS,
     _ApplyLayoutCache,
     _build_unitary_apply_layout,
     _build_superoperator_apply_layout,
 )
-from ..numerics.numba._apply_matrix_to_state import (
+from ..numerics.numba_kernels._apply_matrix_to_state import (
     _apply_matrix_statevector,
     _apply_channel_statevector,
     _apply_channel_density_matrix,
     _apply_superoperator_to_state,
 )
-from ..numerics.numpy._state import _reset_density_matrix, _reset_superoperator
-from .numpy import (
+from ..numerics.numpy_kernels._state import _reset_density_matrix, _reset_superoperator
+from .numpy_engine import (
     _NumpyOperatorEngine,
     NumpyDMEngine,
     NumpySuperopEngine,
     NumpySVEngine,
     NumpyUnitaryEngine,
 )
-from ..workflows.python import _MeasurementKernels, _PythonExecution
-from ..workflows.numba.operators import (
+from ..workflows.python_workflow import _MeasurementKernels, _PythonExecution
+from ..workflows.numba_workflow.operators import (
     _operator_chunks,
     _pack_operator_plan,
     _run_operator_plan_parallel,
     _run_operator_plan_serial,
 )
-from ..workflows.numba.trajectories import (
+from ..workflows.numba_workflow.trajectories import (
     _NumbaTrajectoryExecution,
     _compile_dynamic_plan,
     _execute_sv_trajectories,

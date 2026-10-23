@@ -6,7 +6,7 @@ import pytest
 from fatqat.program import Program
 from fatqat.simulator import Simulator
 import fatqat.operations as ops
-from fatqat.simulator._engine.numerics.numpy._measurement import (
+from fatqat.simulator._engine.numerics.numpy_kernels._measurement import (
     _project_statevector,
     _statevector_probabilities,
 )
